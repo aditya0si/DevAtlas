@@ -1,0 +1,26 @@
+.github/
+├── agents/
+│   ├── orchestrator/
+│   ├── coder/
+│   └── reviewer/
+│
+└── skills/
+    ├── fastapi-expert/
+    ├── postgres-pro/
+    ├── nextjs-developer/
+    ├── code-review/
+    ├── codebase-design/
+    ├── debugging-wizard/
+    ├── improve-codebase-architecture/
+    ├── prompt-engineer/
+    ├── research-agent/
+    ├── security-reviewer/
+    ├── tdd/
+    ├── test-master/
+    ├── the-fool/
+    ├── to-spec/
+    └── to-tickets/
+    ├── geospatial-analytics/
+    ├── github-data-pipeline/
+    ├── ai-classification/
+    └── github-api-expert/

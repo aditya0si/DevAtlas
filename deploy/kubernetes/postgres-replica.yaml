@@ -1,0 +1,90 @@
+# PostgreSQL Read Replica Configuration
+# Deploy read replica in a separate availability zone for read scaling
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: devatlas-postgres-replica
+  labels:
+    app: devatlas
+    component: postgres-replica
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: devatlas
+      component: postgres-replica
+  template:
+    metadata:
+      labels:
+        app: devatlas
+        component: postgres-replica
+    spec:
+      containers:
+        - name: postgres-replica
+          image: postgis/postgis:16-3.4
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: devatlas
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: devatlas-secrets
+                  key: postgres-password
+            - name: POSTGRES_DB
+              value: devatlas
+            # Replication configuration
+            - name: POSTGRES_REPLICATION_MODE
+              value: "replica"
+            - name: POSTGRES_REPLICATION_USER
+              value: devatlas_repl
+            - name: POSTGRES_PRIMARY_HOST
+              value: postgres
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+          volumeMounts:
+            - name: postgres-replica-data
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: postgres-replica-data
+          persistentVolumeClaim:
+            claimName: devatlas-postgres-replica-pvc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: devatlas-postgres-replica-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-replica
+  labels:
+    app: devatlas
+    component: postgres-replica
+spec:
+  selector:
+    app: devatlas
+    component: postgres-replica
+  ports:
+    - port: 5432
+  clusterIP: None
+---
+# Primary-write database remains the same, but we add a service for routing
+# The primary postgres service (postgres) is used for writes
+# The replica service (postgres-replica) is used for read-only queries
+# Application code should route reads to replica and writes to primary

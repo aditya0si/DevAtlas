@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: devatlas-postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: devatlas
+      component: postgres
+  template:
+    metadata:
+      labels:
+        app: devatlas
+        component: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgis/postgis:16-3.4
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: devatlas
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: devatlas-secrets
+                  key: postgres-password
+            - name: POSTGRES_DB
+              value: devatlas
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: postgres-data
+          persistentVolumeClaim:
+            claimName: devatlas-postgres-pvc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: devatlas-postgres-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  selector:
+    app: devatlas
+    component: postgres
+  ports:
+    - port: 5432
+  clusterIP: None

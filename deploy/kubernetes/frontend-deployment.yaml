@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: devatlas-frontend
+  labels:
+    app: devatlas
+    component: frontend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: devatlas
+      component: frontend
+  template:
+    metadata:
+      labels:
+        app: devatlas
+        component: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: devatlas/frontend:latest
+          ports:
+            - containerPort: 3000
+          env:
+            - name: NEXT_PUBLIC_API_URL
+              value: "https://api.devatlas.io"
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: devatlas-frontend
+spec:
+  selector:
+    app: devatlas
+    component: frontend
+  ports:
+    - port: 80
+      targetPort: 3000
+  type: ClusterIP

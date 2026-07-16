@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: devatlas-worker
+  labels:
+    app: devatlas
+    component: worker
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: devatlas
+      component: worker
+  template:
+    metadata:
+      labels:
+        app: devatlas
+        component: worker
+    spec:
+      containers:
+        - name: worker
+          image: devatlas/worker:latest
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: devatlas-secrets
+                  key: database-url
+            - name: REDIS_URL
+              value: "redis://redis:6379/0"
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: devatlas-secrets
+                  key: github-token
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: devatlas-secrets
+                  key: openai-api-key
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"

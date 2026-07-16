@@ -1,0 +1,91 @@
+# CDN Configuration for DevAtlas
+# AWS CloudFront distribution configuration for static assets
+
+---
+# CloudFront Function: Cache policy with custom headers
+# Deployed via: aws cloudfront create-distribution --cli-input-json file://cdn-config.json
+
+{
+  "DistributionConfig": {
+    "CallerReference": "devatlas-static-assets",
+    "Comment": "DevAtlas CDN for static assets",
+    "Enabled": true,
+    "PriceClass": "PriceClass_100",  # North America + Europe
+    "Origins": [
+      {
+        "Id": "devatlas-frontend",
+        "DomainName": "devatlas-frontend.default.svc.cluster.local",
+        "CustomOriginConfig": {
+          "HTTPPort": 80,
+          "HTTPSPort": 443,
+          "OriginProtocolPolicy": "http-only"
+        },
+        "OriginShield": {
+          "Enabled": true,
+          "OriginShieldRegion": "us-east-1"
+        }
+      }
+    ],
+    "DefaultRootObject": "index.html",
+    "DefaultCacheBehavior": {
+      "TargetOriginId": "devatlas-frontend",
+      "ViewerProtocolPolicy": "redirect-to-https",
+      "AllowedMethods": {
+        "Items": ["GET", "HEAD", "OPTIONS"],
+        "CachedMethods": ["GET", "HEAD", "OPTIONS"]
+      },
+      "Compress": true,
+      "CachePolicyId": "658327ea-f89d-4fab-a063-1a71d5e6db93",  # Managed-CachingOptimized policy
+      "SmoothStreaming": false,
+      "MinTTL": 3600,
+      "MaxTTL": 86400,
+      "DefaultTTL": 7200
+    },
+    "CustomErrorResponses": [
+      {
+        "ErrorCode": 404,
+        "ResponseCode": 200,
+        "ResponsePagePath": "/index.html"
+      },
+      {
+        "ErrorCode": 403,
+        "ResponseCode": 200,
+        "ResponsePagePath": "/index.html"
+      }
+    ],
+    "LoggingConfig": {
+      "Enabled": true,
+      "Bucket": "devatlas-logs.s3.amazonaws.com",
+      "Prefix": "cloudfront/"
+    },
+    "ViewerCertificate": {
+      "ACMCertificateArn": "arn:aws:acm:us-east-1:123456789012:certificate/example",
+      "SSLSupportMethod": "sni-only",
+      "MinimumProtocolVersion": "TLSv1.2_2021"
+    },
+    "HttpVersion": "http2and3",
+    "IsIPV6Enabled": true
+  }
+}
+
+# Deployment script:
+# aws cloudfront create-distribution --cli-input-json file://cdn-config.json
+# aws cloudfront create-invalidation --distribution-id DISTRIBUTION_ID --paths "/*"
+
+---
+# Cache invalidation strategy:
+# - Static assets (JS/CSS/images): 1 year cache with versioned filenames
+# - HTML pages: no cache (always fresh for SPA routing)
+# - API responses: handled by API Gateway/CDN, not this distribution
+#
+# Invalidation patterns:
+# - After deployment: invalidate all ("/*")
+# - Routine: rely on versioned filenames (e.g., main.a1b2c3.js)
+#
+# Headers forwarded to origin:
+# - Host
+# - Origin
+# - CloudFront-Viewer-Country (for analytics)
+# - CloudFront-Is-Desktop-Viewer
+# - CloudFront-Is-Mobile-Viewer
+# - CloudFront-Is-Tablet-Viewer

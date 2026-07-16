@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.pyc
+.env
+.env.*
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+.next/
+out/
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Docker / secrets
+*.db
+docker-compose.override.yml
+test_out.txt
+secrets/
+credentials/
+*.pem
+*.key
+*.cert
+*.crt
+
+# OS
+.DS_Store
+Thumbs.db
+docker-compose.yml
