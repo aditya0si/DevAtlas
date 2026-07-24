@@ -35,7 +35,6 @@ Thumbs.db
 
 docker-compose.yml
 backend/.env.example
-backend/app/core/config.py
 monitoring/docker-compose.monitoring.yml
 deploy/kubernetes/secrets.yaml
 
