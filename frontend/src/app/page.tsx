@@ -6,11 +6,16 @@ import {
   Map, BarChart3, GitCompare, Compass, Search, FolderGit2, Settings, HelpCircle, 
   Sparkles, X, ChevronRight, Layers, Filter, ZoomIn, ZoomOut, Maximize2, Info, 
   TrendingUp, Users, Code2, Globe, Activity, Bell, User, Hexagon, Moon, Crosshair, 
-  ChevronLeft, ChevronRight as ChevronRightIcon, Play, FastForward, PlayCircle
+  ChevronLeft, ChevronRight as ChevronRightIcon, Play, FastForward, PlayCircle, LogIn, LogOut, Loader2
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import dynamic from 'next/dynamic';
 import type { DeveloperMapRef } from '@/components/DeveloperMap';
+import PremiumHomepage from '@/components/PremiumHomepage';
+import IndiaOverview from '@/components/IndiaOverview';
+import AskDevAtlas from '@/components/AskDevAtlas';
+import { useAuth } from '@/context/AuthContext';
+import { api } from '@/lib/api';
 
 const DeveloperMap = dynamic(() => import('@/components/DeveloperMap'), { ssr: false });
 
@@ -37,7 +42,6 @@ const LivingStat = ({ value, label, tickRate = 5000 }: { value: number, label: s
   
   useEffect(() => {
     const interval = setInterval(() => {
-      // Simulate live activity by occasionally ticking up
       if (Math.random() > 0.5) {
         setCurrent(prev => +(prev + 0.1).toFixed(1));
       }
@@ -63,6 +67,7 @@ const LivingStat = ({ value, label, tickRate = 5000 }: { value: number, label: s
 export default function ImmersiveHome() {
   const [activeItem, setActiveItem] = useState('map');
   const [activeFilter, setActiveFilter] = useState('All Projects');
+  const { user, logout, setShowAuthModal } = useAuth();
   
   // Cinematic Intro State
   const [introStep, setIntroStep] = useState(0);
@@ -72,7 +77,8 @@ export default function ImmersiveHome() {
 
   // Ask DevAtlas State
   const [searchQuery, setSearchQuery] = useState('');
-  const [showAiAnalyst, setShowAiAnalyst] = useState(false);
+  const [activeAiQuery, setActiveAiQuery] = useState<string | null>(null);
+  const [chatSessionId, setChatSessionId] = useState<string | null>(null);
 
   // Time Machine State
   const [currentYear, setCurrentYear] = useState(2026);
@@ -80,6 +86,9 @@ export default function ImmersiveHome() {
   // Story Mode State
   const [isStoryMode, setIsStoryMode] = useState(false);
   const [storyTitle, setStoryTitle] = useState("");
+
+  // Seed Status State
+  const [seedStatus, setSeedStatus] = useState<{ ready: boolean; total_repos: number }>({ ready: true, total_repos: 0 });
 
   const introMessages = [
     "Loading repository graph...",
@@ -91,14 +100,12 @@ export default function ImmersiveHome() {
   useEffect(() => {
     if (!mapLoaded) return;
     
-    // Play intro text sequence
     const sequence = async () => {
       for (let i = 0; i < introMessages.length; i++) {
         setIntroStep(i);
         await new Promise(r => setTimeout(r, 800));
       }
       setShowIntro(false);
-      // Wait for UI to fade out, then fly to India
       setTimeout(() => {
         mapRef.current?.flyTo([78.9629, 20.5937], 4.5, 55, -15);
       }, 1000);
@@ -106,16 +113,35 @@ export default function ImmersiveHome() {
     sequence();
   }, [mapLoaded]);
 
+  // Poll seed status until data is ready
+  useEffect(() => {
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const status = await api.getSeedStatus();
+        if (!cancelled) {
+          setSeedStatus(status);
+        }
+      } catch {
+        // backend might not be up yet, default to showing UI
+      }
+    };
+    check();
+    const interval = setInterval(check, 10000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
+
   const handleAskDevAtlas = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && searchQuery.trim() !== '') {
-      setShowAiAnalyst(true);
-      // Fly to a simulated coordinate for "Karnataka"
+      setActiveAiQuery(searchQuery.trim());
       mapRef.current?.flyTo([77.5946, 12.9716], 8, 60, -20);
     }
   };
 
   const handleStoryMode = () => {
-    console.log("handleStoryMode called, mapRef.current is:", mapRef.current);
     setIsStoryMode(true);
     setActiveItem('story');
     
@@ -136,10 +162,50 @@ export default function ImmersiveHome() {
     });
   };
 
+  if (activeItem === 'overview') {
+    return (
+      <div className="relative min-h-screen bg-slate-950 text-white">
+        <div className="p-4 border-b border-slate-800 flex justify-between items-center bg-slate-900/80 backdrop-blur-md sticky top-0 z-50">
+          <div className="flex items-center gap-3 cursor-pointer" onClick={() => setActiveItem('map')}>
+            <Hexagon size={24} className="text-indigo-500" />
+            <span className="font-bold text-lg">DevAtlas India</span>
+          </div>
+          <div className="flex items-center gap-4">
+            <button
+              onClick={() => setActiveItem('map')}
+              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 rounded-xl text-sm font-medium transition-colors"
+            >
+              Interactive Map
+            </button>
+            {user ? (
+              <button
+                onClick={logout}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-xl text-sm text-slate-300 transition-colors flex items-center gap-2"
+              >
+                <LogOut size={16} /> Sign Out ({user.email.split('@')[0]})
+              </button>
+            ) : (
+              <button
+                onClick={() => setShowAuthModal(true)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-xl text-sm text-slate-300 transition-colors flex items-center gap-2"
+              >
+                <LogIn size={16} /> Sign In
+              </button>
+            )}
+          </div>
+        </div>
+        <PremiumHomepage onExploreMap={() => setActiveItem('map')} />
+        <div className="container mx-auto px-4 py-12">
+          <IndiaOverview year={currentYear} />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="relative w-full h-screen overflow-hidden bg-[#020617] text-slate-200 selection:bg-indigo-500/30 font-sans">
       
-      {/* Ambient Particles Overlay (Weather-like) */}
+      {/* Ambient Particles Overlay */}
       <div className="particles-bg" />
 
       {/* Cinematic Intro Overlay */}
@@ -176,6 +242,37 @@ export default function ImmersiveHome() {
         )}
       </AnimatePresence>
 
+      {/* Seed Data Interstitial (shown when DB is empty) */}
+      <AnimatePresence>
+        {!seedStatus.ready && !showIntro && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 z-50 flex items-center justify-center bg-slate-950/90 backdrop-blur-sm"
+          >
+            <div className="glass-premium rounded-3xl p-8 max-w-md text-center border border-indigo-500/30 shadow-2xl">
+              <Loader2 className="w-10 h-10 text-indigo-400 animate-spin mx-auto mb-4" />
+              <h2 className="text-xl font-bold text-white mb-2">Preparing Your Experience</h2>
+              <p className="text-slate-400 text-sm mb-4">
+                We're seeding India's top developer datasets for your first visit. This may take a moment...
+              </p>
+              <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
+                <motion.div
+                  className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 rounded-full"
+                  initial={{ width: "0%" }}
+                  animate={{ width: "60%" }}
+                  transition={{ duration: 15, ease: "easeOut" }}
+                />
+              </div>
+              <p className="text-xs text-slate-500 mt-3">
+                {seedStatus.total_repos > 0 ? `${seedStatus.total_repos} repos loaded so far...` : 'Connecting to GitHub...'}
+              </p>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* The Hero Map */}
       <motion.div
         initial={{ opacity: 0 }}
@@ -190,7 +287,7 @@ export default function ImmersiveHome() {
         />
       </motion.div>
 
-      {/* Top Navigation: Ask DevAtlas */}
+      {/* Top Navigation: Ask DevAtlas + Auth */}
       <motion.div 
         initial={{ y: -100, opacity: 0 }}
         animate={{ y: 0, opacity: showIntro ? 0 : 1 }}
@@ -213,6 +310,25 @@ export default function ImmersiveHome() {
               />
             </div>
           </div>
+
+          {/* Auth Button */}
+          {user ? (
+            <button
+              onClick={logout}
+              className="px-4 py-3 glass-premium rounded-full text-xs font-semibold text-slate-300 hover:text-white border border-white/10 hover:border-indigo-500/50 transition-all flex items-center gap-2 whitespace-nowrap"
+            >
+              <User size={16} className="text-indigo-400" />
+              <span>{user.email.split('@')[0]}</span>
+            </button>
+          ) : (
+            <button
+              onClick={() => setShowAuthModal(true)}
+              className="px-5 py-3 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 rounded-full text-xs font-bold text-white shadow-lg transition-all flex items-center gap-2 whitespace-nowrap"
+            >
+              <LogIn size={16} />
+              <span>Sign In</span>
+            </button>
+          )}
         </div>
 
         {/* Filter Pills */}
@@ -284,9 +400,9 @@ export default function ImmersiveHome() {
         </div>
       </motion.div>
 
-      {/* Developer Pulse (Only show when not in story mode and no AI analyst) */}
+      {/* Developer Pulse (Only show when not in story mode and no AI analyst active) */}
       <AnimatePresence>
-        {!isStoryMode && !showAiAnalyst && (
+        {!isStoryMode && !activeAiQuery && (
           <motion.div
             initial={{ x: -20, opacity: 0 }}
             animate={{ x: 0, opacity: showIntro ? 0 : 1 }}
@@ -322,49 +438,15 @@ export default function ImmersiveHome() {
         )}
       </AnimatePresence>
 
-      {/* Ask DevAtlas AI Analyst Panel */}
+      {/* Real Streaming Ask DevAtlas AI Panel */}
       <AnimatePresence>
-        {showAiAnalyst && (
-          <motion.div
-            initial={{ x: 50, opacity: 0 }}
-            animate={{ x: 0, opacity: 1 }}
-            exit={{ x: 50, opacity: 0 }}
-            className="absolute top-36 right-24 z-30 w-96 pointer-events-none"
-          >
-            <div className="glass-premium rounded-3xl p-6 shadow-2xl relative overflow-hidden group pointer-events-auto edge-light">
-              <div className="absolute top-0 right-0 w-48 h-48 bg-indigo-500/10 rounded-full blur-3xl group-hover:bg-indigo-500/20 transition-colors" />
-              
-              <button 
-                onClick={() => setShowAiAnalyst(false)}
-                className="absolute top-4 right-4 text-slate-400 hover:text-white transition-colors"
-              >
-                <X size={18} />
-              </button>
-
-              <div className="flex items-center gap-2 mb-6 relative z-10">
-                <Sparkles className="text-[#8B5CF6] animate-pulse" size={18} />
-                <h3 className="text-sm font-bold text-transparent bg-clip-text bg-gradient-to-r from-indigo-300 to-purple-300 uppercase tracking-widest">DevAtlas AI</h3>
-              </div>
-              
-              <h4 className="text-xl font-bold text-white mb-3 leading-tight relative z-10">Why is Karnataka growing?</h4>
-              
-              <div className="prose prose-invert prose-sm relative z-10 text-slate-300 leading-relaxed">
-                <p>Karnataka&apos;s growth is driven by a massive influx of <strong>Generative AI repositories</strong> clustered in Bengaluru&apos;s HSR Layout.</p>
-                <p>Over the last 48 hours, we detected a 32% spike in commits to open-source LLM tooling, highly correlated with recent local tech conferences and VC funding.</p>
-              </div>
-              
-              <div className="mt-6 flex items-center justify-between border-t border-white/10 pt-4 relative z-10">
-                <div className="flex items-center gap-2">
-                  <div className="px-2.5 py-1 bg-emerald-500/10 border border-emerald-500/20 rounded-full text-[10px] text-emerald-400 font-bold tracking-wide">
-                    98% CONFIDENCE
-                  </div>
-                </div>
-                <button className="text-xs text-indigo-400 hover:text-indigo-300 font-semibold flex items-center gap-1 transition-colors">
-                  Explore Cluster <ChevronRightIcon size={14} />
-                </button>
-              </div>
-            </div>
-          </motion.div>
+        {activeAiQuery && (
+          <AskDevAtlas
+            query={activeAiQuery}
+            onClose={() => setActiveAiQuery(null)}
+            sessionId={chatSessionId ?? undefined}
+            onSessionChange={(id) => setChatSessionId(id)}
+          />
         )}
       </AnimatePresence>
 

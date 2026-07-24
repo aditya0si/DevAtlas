@@ -32,4 +32,20 @@ credentials/
 # OS
 .DS_Store
 Thumbs.db
-docker-compose.yml
+
+docker-compose.yml
+backend/.env.example
+backend/app/core/config.py
+monitoring/docker-compose.monitoring.yml
+deploy/kubernetes/secrets.yaml
+
+# Planning / memory / progress (not code)
+memory.md
+devAtlas_progress.md
+PLAN_*.md
+frontend/devAtlas_progress.md
+docs/roadmap.md
+
+# Test artifacts
+frontend/test-results/
+frontend/screenshots/

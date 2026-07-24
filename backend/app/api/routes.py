@@ -15,6 +15,7 @@ from app.api import (  # noqa: E402  # noqa: E402  # noqa: E402
     websocket_endpoints,
     analytics,
     observability,
+    activity,
 )
 
 api_router = APIRouter()
@@ -28,4 +29,5 @@ api_router.include_router(india.router, prefix="/india", tags=["india"])
 api_router.include_router(location_intelligence.router, prefix="/location-intelligence", tags=["location-intelligence"])
 api_router.include_router(analytics.router, prefix="/analytics", tags=["analytics"])
 api_router.include_router(observability.router, prefix="/observability", tags=["observability"])
+api_router.include_router(activity.router, tags=["activity"])
 api_router.include_router(v2.router)  # /v2 prefix is in v2.py

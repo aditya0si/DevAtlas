@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -221,7 +222,28 @@ async def get_state_dashboard(
     )
 
 
-@router.get("/analytics/graphs", response_model=AnalyticsGraphResponse)
+@router.get("/seed-status", response_model=dict)
+async def get_seed_status(
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Check if the database has been seeded with demo data."""
+    from sqlalchemy import func
+    from app.models.github import Repository
+
+    result = await db.execute(select(func.count(Repository.id)))
+    total_repos = result.scalar() or 0
+
+    embedded_result = await db.execute(
+        select(func.count(Repository.id)).where(Repository.embedding.isnot(None))
+    )
+    embedded_repos = embedded_result.scalar() or 0
+
+    return {
+        "has_data": total_repos > 0,
+        "total_repos": total_repos,
+        "embedded_repos": embedded_repos,
+        "ready": total_repos >= 100 and embedded_repos >= 50,
+    }
 async def get_analytics_graphs(
     db: AsyncSession = Depends(get_db),
     time_range: str = Query(default="month", pattern="^(week|month|quarter|year)$"),
@@ -481,45 +503,73 @@ async def semantic_search(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate embedding: {str(e)}")
 
-    # Get repositories with embeddings
-    query = select(Repository).where(Repository.embedding.isnot(None))
-
-    if request.domain:
-        query = query.where(Repository.classification["domain"].astext.ilike(f"%{request.domain}%"))
-
-    result = await db.execute(query.limit(500))
-    repositories = result.scalars().all()
-
-    # Calculate cosine similarity and sort
-    def cosine_similarity(a: list[float], b: list[float]) -> float:
-        dot_product = sum(x * y for x, y in zip(a, b))
-        norm_a = sum(x * x for x in a) ** 0.5
-        norm_b = sum(x * x for x in b) ** 0.5
-        return dot_product / (norm_a * norm_b) if norm_a and norm_b else 0
-
-    scored_repos = []
-    for repo in repositories:
-        if repo.embedding:
-            similarity = cosine_similarity(query_embedding, repo.embedding)
-            scored_repos.append((repo, similarity))
-
-    scored_repos.sort(key=lambda x: x[1], reverse=True)
-    top_results = scored_repos[:request.limit]
-
-    results = [
-        SemanticSearchResult(
-            repository_id=repo.id,
-            name=repo.name,
-            full_name=repo.full_name,
-            description=repo.description,
-            similarity=round(similarity, 4),
-            language=repo.language,
-            topics=repo.topics or [],
-            stars=repo.stargazers_count,
-            html_url=repo.html_url,
+    # Try native SQL vector similarity search via pgvector
+    results = []
+    try:
+        # Check if pgvector is available on model column
+        sim_col = (1 - Repository.embedding.cosine_distance(query_embedding)).label("similarity")
+        stmt = (
+            select(Repository, sim_col)
+            .where(Repository.embedding.isnot(None))
         )
-        for repo, similarity in top_results
-    ]
+        if request.domain:
+            stmt = stmt.where(Repository.classification["domain"].astext.ilike(f"%{request.domain}%"))
+        stmt = stmt.order_by(Repository.embedding.cosine_distance(query_embedding)).limit(request.limit)
+        
+        db_res = await db.execute(stmt)
+        rows = db_res.all()
+        for repo, similarity in rows:
+            results.append(
+                SemanticSearchResult(
+                    repository_id=repo.id,
+                    name=repo.name,
+                    full_name=repo.full_name,
+                    description=repo.description,
+                    similarity=round(float(similarity or 0), 4),
+                    language=repo.language,
+                    topics=repo.topics or [],
+                    stars=repo.stargazers_count,
+                    html_url=repo.html_url,
+                )
+            )
+    except Exception:
+        # Fallback to in-memory cosine calculation for non-PostgreSQL/SQLite test environments
+        query = select(Repository).where(Repository.embedding.isnot(None))
+        if request.domain:
+            query = query.where(Repository.classification["domain"].astext.ilike(f"%{request.domain}%"))
+
+        result = await db.execute(query.limit(500))
+        repositories = result.scalars().all()
+
+        def cosine_similarity(a: list[float], b: list[float]) -> float:
+            dot_product = sum(x * y for x, y in zip(a, b))
+            norm_a = sum(x * x for x in a) ** 0.5
+            norm_b = sum(x * x for x in b) ** 0.5
+            return dot_product / (norm_a * norm_b) if norm_a and norm_b else 0
+
+        scored_repos = []
+        for repo in repositories:
+            if repo.embedding:
+                similarity = cosine_similarity(query_embedding, repo.embedding)
+                scored_repos.append((repo, similarity))
+
+        scored_repos.sort(key=lambda x: x[1], reverse=True)
+        top_results = scored_repos[:request.limit]
+
+        results = [
+            SemanticSearchResult(
+                repository_id=repo.id,
+                name=repo.name,
+                full_name=repo.full_name,
+                description=repo.description,
+                similarity=round(similarity, 4),
+                language=repo.language,
+                topics=repo.topics or [],
+                stars=repo.stargazers_count,
+                html_url=repo.html_url,
+            )
+            for repo, similarity in top_results
+        ]
 
     return SemanticSearchResponse(
         query=request.query,
@@ -680,3 +730,136 @@ async def get_comparison_insights(
     )
 
     return [i.model_dump() for i in insights]
+
+
+@router.get("/ask/stream")
+async def ask_devatlas_stream(
+    query: str = Query(..., description="Query for DevAtlas AI Copilot"),
+    session_id: Optional[str] = Query(default=None, description="Chat session ID for multi-turn conversation"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Stream AI response for Ask DevAtlas Copilot query using SSE with RAG grounded context."""
+    from app.services.ai_service import AIServiceFactory
+    from app.services.rag_service import RAGService
+    from app.repositories.chat_repository import ChatRepository
+    import json
+
+    chat_repo = ChatRepository(db)
+    session = None
+
+    if session_id:
+        session = await chat_repo.get_session(session_id)
+    if not session:
+        session = await chat_repo.create_session(title=query[:60])
+        session_id = session.id
+
+    await chat_repo.add_message(session_id, "user", query)
+
+    rag_service = RAGService(db)
+    rag_result = await rag_service.retrieve_context(query)
+
+    history_context = _build_history_context(session.messages) if session.messages else ""
+
+    system_prompt = (
+        "You are DevAtlas AI, an expert software ecosystem intelligence analyst specializing in Indian developer data.\n"
+        "Ground your answer strictly in the provided repository context below when relevant. Cite specific repository names.\n\n"
+        f"--- CONVERSATION HISTORY ---\n{history_context}\n------------------------------\n\n"
+        f"--- GROUNDED REPOSITORY CONTEXT ---\n{rag_result.formatted_context}\n-----------------------------------"
+    )
+
+    async def event_generator():
+        full_response: list[str] = []
+        try:
+            provider = AIServiceFactory.get_provider()
+            # Send session_id first
+            yield f"data: {json.dumps({'session_id': session_id})}\n\n"
+
+            if rag_result.citations:
+                citations_payload = json.dumps({"citations": [c.model_dump() for c in rag_result.citations]})
+                yield f"data: {citations_payload}\n\n"
+
+            async for chunk in provider.stream_text(system_prompt=system_prompt, user_prompt=query):
+                full_response.append(chunk)
+                data = json.dumps({"text": chunk})
+                yield f"data: {data}\n\n"
+
+            # Persist assistant response
+            await chat_repo.add_message(session_id, "assistant", "".join(full_response))
+            await db.commit()
+
+            yield "data: [DONE]\n\n"
+        except Exception as e:
+            err_data = json.dumps({"error": str(e)})
+            yield f"data: {err_data}\n\n"
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@router.post("/ask")
+async def ask_devatlas(
+    request: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    """Ask DevAtlas Copilot non-streaming endpoint with grounded RAG context and multi-turn support."""
+    from app.services.ai_service import AIServiceFactory
+    from app.services.rag_service import RAGService
+    from app.repositories.chat_repository import ChatRepository
+
+    query = request.get("query", "")
+    if not query:
+        raise HTTPException(status_code=400, detail="Query parameter is required")
+
+    session_id = request.get("session_id")
+    chat_repo = ChatRepository(db)
+    session = None
+
+    if session_id:
+        session = await chat_repo.get_session(session_id)
+    if not session:
+        session = await chat_repo.create_session(title=query[:60])
+
+    await chat_repo.add_message(session.id, "user", query)
+
+    rag_service = RAGService(db)
+    rag_result = await rag_service.retrieve_context(query)
+
+    history_context = _build_history_context(session.messages) if session.messages else ""
+
+    system_prompt = (
+        "You are DevAtlas AI, an expert software ecosystem intelligence analyst specializing in Indian developer data.\n"
+        "Ground your answer strictly in the provided repository context below when relevant.\n\n"
+        f"--- CONVERSATION HISTORY ---\n{history_context}\n------------------------------\n\n"
+        f"--- GROUNDED REPOSITORY CONTEXT ---\n{rag_result.formatted_context}\n-----------------------------------"
+    )
+
+    provider = AIServiceFactory.get_provider()
+    chunks = []
+    async for chunk in provider.stream_text(system_prompt=system_prompt, user_prompt=query):
+        chunks.append(chunk)
+
+    answer = "".join(chunks)
+    await chat_repo.add_message(session.id, "assistant", answer)
+    await db.commit()
+
+    return {
+        "query": query,
+        "answer": answer,
+        "session_id": session.id,
+        "citations": [c.model_dump() for c in rag_result.citations],
+        "confidence_score": 0.95,
+    }
+
+
+def _build_history_context(messages: list) -> str:
+    """Build conversation history context from chat messages."""
+    if not messages:
+        return "No prior conversation."
+    recent = messages[-10:]  # Last 10 messages for context window
+    lines = []
+    for msg in recent:
+        role_label = "User" if msg.role == "user" else "DevAtlas"
+        lines.append(f"{role_label}: {msg.content[:500]}")
+    return "\n".join(lines)
+
+

@@ -1,0 +1,56 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "title": "Total AI Tokens Consumed",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "sum(devatlas_ai_token_usage_total)",
+          "legendFormat": "Tokens"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 }
+    },
+    {
+      "title": "Estimated AI Spend (USD)",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "sum(devatlas_ai_estimated_cost_usd_total)",
+          "legendFormat": "USD"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 }
+    },
+    {
+      "title": "AI Request Latency (seconds)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(devatlas_ai_request_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p95 Latency"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 8 }
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["ai", "costs", "devatlas"],
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "title": "DevAtlas AI Engineering & Cost Telemetry",
+  "version": 1
+}

@@ -62,6 +62,32 @@ REDIS_OPERATIONS = Counter(
     ["operation"],
 )
 
+# AI provider metrics
+AI_REQUESTS = Counter(
+    "ai_requests_total",
+    "Total AI provider requests",
+    ["provider", "operation", "model"],
+)
+
+AI_TOKENS = Counter(
+    "ai_tokens_total",
+    "Total AI tokens used",
+    ["provider", "operation", "model"],
+)
+
+AI_COST = Counter(
+    "ai_cost_cents_total",
+    "Total estimated AI cost in cents",
+    ["provider", "operation", "model"],
+)
+
+AI_LATENCY = Histogram(
+    "ai_request_duration_seconds",
+    "AI request latency",
+    ["provider", "operation"],
+    buckets=[0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0],
+)
+
 
 class MetricsMiddleware(BaseHTTPMiddleware):
     """Middleware to collect Prometheus metrics."""

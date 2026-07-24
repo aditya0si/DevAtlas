@@ -64,7 +64,11 @@ const AnimatedCounter = ({ value, duration = 2000 }: { value: number; duration?:
   return <span>{count.toLocaleString()}</span>;
 };
 
-const HeroSection = () => (
+interface PremiumHomepageProps {
+  onExploreMap?: () => void;
+}
+
+const HeroSection = ({ onExploreMap }: { onExploreMap?: () => void }) => (
   <section className="relative overflow-hidden">
     <div className="absolute inset-0 bg-gradient-to-br from-indigo-900/20 via-purple-900/10 to-slate-900" />
     <div className="absolute top-20 left-1/4 w-96 h-96 bg-indigo-500/20 rounded-full blur-3xl" />
@@ -97,17 +101,21 @@ const HeroSection = () => (
           <motion.button
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
-            className="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-xl flex items-center gap-2 transition-colors"
+            onClick={onExploreMap}
+            className="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-xl flex items-center gap-2 transition-colors cursor-pointer"
           >
             Explore Map <ArrowRight className="w-4 h-4" />
           </motion.button>
-          <motion.button
+          <motion.a
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
-            className="px-6 py-3 bg-slate-800 hover:bg-slate-700 text-white font-medium rounded-xl flex items-center gap-2 transition-colors border border-slate-700"
+            href="https://github.com/aditya0si/DevAtlas"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="px-6 py-3 bg-slate-800 hover:bg-slate-700 text-white font-medium rounded-xl flex items-center gap-2 transition-colors border border-slate-700 cursor-pointer"
           >
             <Star className="w-4 h-4" /> View on GitHub
-          </motion.button>
+          </motion.a>
         </div>
       </motion.div>
     </div>
@@ -184,13 +192,14 @@ const FeaturesSection = () => (
   </section>
 );
 
-const QuickActions = () => (
+const QuickActions = ({ onExploreMap }: { onExploreMap?: () => void }) => (
   <section className="py-20 bg-slate-900/50 border-t border-slate-800">
     <div className="container mx-auto px-4">
       <h2 className="text-3xl font-bold text-white mb-8 text-center">Quick Actions</h2>
       <div className="grid md:grid-cols-3 gap-6">
         <motion.div
           whileHover={{ scale: 1.02 }}
+          onClick={onExploreMap}
           className="p-6 rounded-2xl bg-gradient-to-br from-indigo-500/10 to-purple-500/10 border border-indigo-500/20 cursor-pointer"
         >
           <Globe className="w-8 h-8 text-indigo-400 mb-4" />
@@ -203,6 +212,7 @@ const QuickActions = () => (
         
         <motion.div
           whileHover={{ scale: 1.02 }}
+          onClick={onExploreMap}
           className="p-6 rounded-2xl bg-gradient-to-br from-emerald-500/10 to-teal-500/10 border border-emerald-500/20 cursor-pointer"
         >
           <Activity className="w-8 h-8 text-emerald-400 mb-4" />
@@ -215,6 +225,7 @@ const QuickActions = () => (
         
         <motion.div
           whileHover={{ scale: 1.02 }}
+          onClick={onExploreMap}
           className="p-6 rounded-2xl bg-gradient-to-br from-amber-500/10 to-orange-500/10 border border-amber-500/20 cursor-pointer"
         >
           <Zap className="w-8 h-8 text-amber-400 mb-4" />
@@ -229,13 +240,13 @@ const QuickActions = () => (
   </section>
 );
 
-export default function PremiumHomepage() {
+export default function PremiumHomepage({ onExploreMap }: PremiumHomepageProps) {
   return (
     <div className="min-h-screen bg-slate-950">
-      <HeroSection />
+      <HeroSection onExploreMap={onExploreMap} />
       <StatsSection />
       <FeaturesSection />
-      <QuickActions />
+      <QuickActions onExploreMap={onExploreMap} />
     </div>
   );
 }

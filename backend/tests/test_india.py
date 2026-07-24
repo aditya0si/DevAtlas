@@ -381,3 +381,26 @@ class TestGeospatialFilters:
 
         # Should still work - invalid domain is ignored
         assert response.status_code == 200
+
+
+class TestAskDevAtlas:
+    """Tests for Ask DevAtlas Copilot endpoints."""
+
+    @pytest.mark.asyncio
+    async def test_ask_devatlas_post(self, client, db_session):
+        """Test POST /api/v1/india/ask endpoint."""
+        response = await client.post(
+            "/api/v1/india/ask",
+            json={"query": "Why is Karnataka growing?"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert "answer" in data
+        assert data["query"] == "Why is Karnataka growing?"
+
+    @pytest.mark.asyncio
+    async def test_ask_devatlas_stream_get(self, client, db_session):
+        """Test GET /api/v1/india/ask/stream endpoint."""
+        response = await client.get("/api/v1/india/ask/stream?query=Why+is+Karnataka+growing%3F")
+        assert response.status_code == 200
+        assert "text/event-stream" in response.headers.get("content-type", "")

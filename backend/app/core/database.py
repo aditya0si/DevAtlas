@@ -9,12 +9,16 @@ from app.core.config import get_settings  # noqa: E402  # noqa: E402  # noqa: E4
 
 settings = get_settings()
 
+engine_kwargs = {
+    "echo": settings.environment == "development",
+    "pool_pre_ping": True,
+}
+if not settings.database_url.startswith("sqlite"):
+    engine_kwargs.update({"pool_size": 5, "max_overflow": 10})
+
 engine = create_async_engine(
     settings.database_url,
-    echo=settings.environment == "development",
-    pool_pre_ping=True,
-    pool_size=5,
-    max_overflow=10,
+    **engine_kwargs,
 )
 
 async_session_factory = async_sessionmaker(engine, expire_on_commit=False)

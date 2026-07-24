@@ -115,8 +115,13 @@ async def enqueue_full_pipeline() -> dict[str, Any]:
 
     for func_name in [
         "run_repo_ingestion",
+        "run_push_event_ingestion",
         "run_user_enrichment",
+        "run_event_enrichment",
         "run_ai_classification",
+        "run_aggregation",
+        "run_activity_score",
+        "run_ecosystem_score",
         "run_analytics_worker",
     ]:
         job = await redis.enqueue_job(func_name)
@@ -144,6 +149,81 @@ async def get_sync_status(job_id: str) -> dict[str, Any]:
         "result": job.result,
         "enqueued_at": job.enqueue_time_ms,
         "finished_at": job.finish_time_ms,
+    }
+
+
+@router.post("/sync/events")
+async def enqueue_event_sync() -> dict[str, str]:
+    """Enqueue PushEvent ingestion."""
+    redis = await get_arq_redis()
+    job = await redis.enqueue_job("run_push_event_ingestion")
+
+    if job is None:
+        raise HTTPException(status_code=500, detail="Failed to enqueue job")
+
+    return {
+        "message": "Push event ingestion enqueued",
+        "job_id": str(job.job_id),
+    }
+
+
+@router.post("/sync/enrich-events")
+async def enqueue_event_enrichment() -> dict[str, str]:
+    """Enqueue event enrichment (resolve actor, domain, location)."""
+    redis = await get_arq_redis()
+    job = await redis.enqueue_job("run_event_enrichment")
+
+    if job is None:
+        raise HTTPException(status_code=500, detail="Failed to enqueue job")
+
+    return {
+        "message": "Event enrichment enqueued",
+        "job_id": str(job.job_id),
+    }
+
+
+@router.post("/sync/scores")
+async def enqueue_activity_scores() -> dict[str, str]:
+    """Enqueue Activity Score computation."""
+    redis = await get_arq_redis()
+    job = await redis.enqueue_job("run_activity_score")
+
+    if job is None:
+        raise HTTPException(status_code=500, detail="Failed to enqueue job")
+
+    return {
+        "message": "Activity score computation enqueued",
+        "job_id": str(job.job_id),
+    }
+
+
+@router.post("/sync/ecosystem-scores")
+async def enqueue_ecosystem_scores() -> dict[str, str]:
+    """Enqueue Ecosystem Score computation."""
+    redis = await get_arq_redis()
+    job = await redis.enqueue_job("run_ecosystem_score")
+
+    if job is None:
+        raise HTTPException(status_code=500, detail="Failed to enqueue job")
+
+    return {
+        "message": "Ecosystem score computation enqueued",
+        "job_id": str(job.job_id),
+    }
+
+
+@router.post("/sync/aggregation")
+async def enqueue_aggregation() -> dict[str, str]:
+    """Enqueue daily/hourly aggregation."""
+    redis = await get_arq_redis()
+    job = await redis.enqueue_job("run_aggregation")
+
+    if job is None:
+        raise HTTPException(status_code=500, detail="Failed to enqueue job")
+
+    return {
+        "message": "Aggregation enqueued",
+        "job_id": str(job.job_id),
     }
 
 

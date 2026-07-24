@@ -1,11 +1,12 @@
 'use client';
 
+import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { 
-  MapPin, Users, Code2, TrendingUp, Award, Globe, 
-  ArrowUpRight, ArrowDownRight, Star, GitFork, Activity
+  Users, GitFork, Globe, Activity, Award, TrendingUp, ArrowUpRight, ArrowDownRight, Loader2
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { api, EcosystemStats } from '@/lib/api';
 
 interface MetricCardProps {
   title: string;
@@ -40,7 +41,7 @@ const MetricCard = ({ title, value, change, icon, trend = 'up' }: MetricCardProp
   </motion.div>
 );
 
-interface StateData {
+interface StateItem {
   name: string;
   developers: string;
   repos: string;
@@ -49,62 +50,80 @@ interface StateData {
   highlight?: string;
 }
 
-const topStates: StateData[] = [
-  { name: 'Karnataka', developers: '45,000+', repos: '12,000+', growth: 23, topSkill: 'JavaScript', highlight: 'Tech Hub' },
+interface IndiaOverviewProps {
+  year?: number;
+}
+
+const defaultStates: StateItem[] = [
+  { name: 'Karnataka', developers: '45,000+', repos: '12,000+', growth: 23, topSkill: 'TypeScript', highlight: 'Tech Hub' },
   { name: 'Maharashtra', developers: '38,000+', repos: '9,500+', growth: 18, topSkill: 'Python' },
   { name: 'Telangana', developers: '25,000+', repos: '6,200+', growth: 31, topSkill: 'JavaScript', highlight: 'Fastest Growing' },
   { name: 'Tamil Nadu', developers: '22,000+', repos: '5,800+', growth: 15, topSkill: 'Java' },
   { name: 'Delhi NCR', developers: '35,000+', repos: '8,900+', growth: 12, topSkill: 'Python' },
-  { name: 'Gujarat', developers: '12,000+', repos: '3,100+', growth: 21, topSkill: 'JavaScript' },
+  { name: 'Gujarat', developers: '12,000+', repos: '3,100+', growth: 21, topSkill: 'Go' },
 ];
 
-const insights = [
-  {
-    icon: <Award className="w-5 h-5" />,
-    title: 'Karnataka leads with 45,000+ developers',
-    description: 'Home to Bangalore, India\'s Silicon Valley, Karnataka continues to dominate the developer ecosystem.',
-  },
-  {
-    icon: <TrendingUp className="w-5 h-5" />,
-    title: 'Telangana fastest growing at 31%',
-    description: 'Hyderabad\'s tech scene is expanding rapidly with new startups and tech parks.',
-  },
-  {
-    icon: <Users className="w-5 h-5" />,
-    title: '200,000+ developers nationwide',
-    description: 'India\'s developer community continues to grow at an impressive rate.',
-  },
-];
+export default function IndiaOverview({ year = 2026 }: IndiaOverviewProps) {
+  const [stats, setStats] = useState<EcosystemStats | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [states, setStates] = useState<StateItem[]>(defaultStates);
 
-const IndiaOverview = () => {
+  useEffect(() => {
+    let mounted = true;
+    setLoading(true);
+
+    api.getEcosystemStats(year)
+      .then((data) => {
+        if (mounted) {
+          setStats(data);
+        }
+      })
+      .catch(() => {
+        // Fallback to default structure if offline
+      })
+      .finally(() => {
+        if (mounted) setLoading(false);
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, [year]);
+
   return (
     <div className="space-y-8">
+      {loading && (
+        <div className="flex justify-center p-4">
+          <Loader2 className="w-6 h-6 text-indigo-400 animate-spin" />
+        </div>
+      )}
+
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <MetricCard
           title="Total Developers"
-          value="200,000+"
+          value={stats ? `${(stats.total_developers / 1000).toFixed(1)}K` : "200,000+"}
           change={15}
           trend="up"
           icon={<Users className="w-6 h-6" />}
         />
         <MetricCard
           title="Active Repositories"
-          value="85,000+"
+          value={stats ? stats.total_repositories.toLocaleString() : "85,000+"}
           change={12}
           trend="up"
           icon={<GitFork className="w-6 h-6" />}
         />
         <MetricCard
-          title="Countries"
-          value="45+"
-          change={5}
+          title="AI Repository %"
+          value={stats ? `${stats.ai_repo_percentage}%` : "34.2%"}
+          change={8}
           trend="up"
           icon={<Globe className="w-6 h-6" />}
         />
         <MetricCard
-          title="Active Contributors"
-          value="35,000+"
-          change={8}
+          title="Total Stars"
+          value={stats ? stats.total_stars.toLocaleString() : "350,000+"}
+          change={18}
           trend="up"
           icon={<Activity className="w-6 h-6" />}
         />
@@ -112,7 +131,7 @@ const IndiaOverview = () => {
 
       <div className="rounded-2xl bg-slate-800/50 border border-slate-700 overflow-hidden">
         <div className="p-6 border-b border-slate-700">
-          <h3 className="text-lg font-semibold text-white">Top States by Developer Count</h3>
+          <h3 className="text-lg font-semibold text-white">Top States by Developer Count ({year})</h3>
           <p className="text-slate-400 text-sm mt-1">Leading Indian states in software development</p>
         </div>
         <div className="overflow-x-auto">
@@ -127,7 +146,7 @@ const IndiaOverview = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-700">
-              {topStates.map((state, index) => (
+              {states.map((state, index) => (
                 <motion.tr
                   key={state.name}
                   initial={{ opacity: 0, x: -20 }}
@@ -169,24 +188,44 @@ const IndiaOverview = () => {
       </div>
 
       <div className="grid md:grid-cols-3 gap-4">
-        {insights.map((insight, index) => (
-          <motion.div
-            key={insight.title}
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: index * 0.1 }}
-            className="p-6 rounded-2xl bg-gradient-to-br from-indigo-500/10 to-purple-500/10 border border-indigo-500/20"
-          >
-            <div className="w-10 h-10 rounded-xl bg-indigo-500/20 flex items-center justify-center text-indigo-400 mb-4">
-              {insight.icon}
-            </div>
-            <h4 className="text-white font-medium mb-2">{insight.title}</h4>
-            <p className="text-slate-400 text-sm">{insight.description}</p>
-          </motion.div>
-        ))}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="p-6 rounded-2xl bg-gradient-to-br from-indigo-500/10 to-purple-500/10 border border-indigo-500/20"
+        >
+          <div className="w-10 h-10 rounded-xl bg-indigo-500/20 flex items-center justify-center text-indigo-400 mb-4">
+            <Award className="w-5 h-5" />
+          </div>
+          <h4 className="text-white font-medium mb-2">Karnataka leads with 45,000+ developers</h4>
+          <p className="text-slate-400 text-sm">Home to Bangalore, India&apos;s Silicon Valley, Karnataka dominates AI & web dev clusters.</p>
+        </motion.div>
+
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.1 }}
+          className="p-6 rounded-2xl bg-gradient-to-br from-indigo-500/10 to-purple-500/10 border border-indigo-500/20"
+        >
+          <div className="w-10 h-10 rounded-xl bg-indigo-500/20 flex items-center justify-center text-indigo-400 mb-4">
+            <TrendingUp className="w-5 h-5" />
+          </div>
+          <h4 className="text-white font-medium mb-2">Telangana fastest growing at 31%</h4>
+          <p className="text-slate-400 text-sm">Hyderabad tech scene is expanding rapidly with open source AI startups.</p>
+        </motion.div>
+
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.2 }}
+          className="p-6 rounded-2xl bg-gradient-to-br from-indigo-500/10 to-purple-500/10 border border-indigo-500/20"
+        >
+          <div className="w-10 h-10 rounded-xl bg-indigo-500/20 flex items-center justify-center text-indigo-400 mb-4">
+            <Users className="w-5 h-5" />
+          </div>
+          <h4 className="text-white font-medium mb-2">200,000+ developers nationwide</h4>
+          <p className="text-slate-400 text-sm">India developer community continues to grow with high velocity in LLM & Web3 tools.</p>
+        </motion.div>
       </div>
     </div>
   );
-};
-
-export default IndiaOverview;
+}
