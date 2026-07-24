@@ -255,7 +255,7 @@ export default function ImmersiveHome() {
               <Loader2 className="w-10 h-10 text-indigo-400 animate-spin mx-auto mb-4" />
               <h2 className="text-xl font-bold text-white mb-2">Preparing Your Experience</h2>
               <p className="text-slate-400 text-sm mb-4">
-                We're seeding India's top developer datasets for your first visit. This may take a moment...
+                We\u2019re seeding India\u2019s top developer datasets for your first visit. This may take a moment...
               </p>
               <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
                 <motion.div

@@ -3,7 +3,7 @@
  * Provides typed functions for interacting with the DevAtlas FastAPI backend.
  */
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || '/api/v1';
 
 export class APIError extends Error {
   status: number;

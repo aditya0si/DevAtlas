@@ -13,13 +13,16 @@ _redis_client: Optional[Redis] = None
 
 
 async def get_redis() -> Redis:
-    """Get or create Redis client connection."""
+    """Get or create Redis client connection. Raises if redis_url is not set."""
     global _redis_client
     if _redis_client is None:
+        if not settings.redis_url:
+            raise RuntimeError("REDIS_URL is not configured")
         _redis_client = redis.from_url(
             settings.redis_url,
             encoding="utf-8",
             decode_responses=True,
+            socket_connect_timeout=3,
         )
     return _redis_client
 

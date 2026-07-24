@@ -46,35 +46,6 @@ async def get_developer_activity(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid bbox format") from exc
 
-    # Build query with optional domain filter
-    domain_filter = ""
-    if domain:
-        domain_mapping = {
-            "ai": "%ai%",
-            "cybersecurity": "%cybersecurity%",
-            "healthcare": "%healthcare%",
-            "robotics": "%robotics%",
-            "web": "%web%",
-            "mobile": "%mobile%",
-            "devops": "%devops%",
-            "blockchain": "%blockchain%",
-            "opensource": "%opensource%",
-        }
-        if domain in domain_mapping:
-            domain_filter = f"AND classification->>'domain' ILIKE '{domain_mapping[domain]}'"
-
-    # Time range filter
-    time_filter = ""
-    if time_range:
-        time_mapping = {
-            "week": "7 days",
-            "month": "30 days",
-            "quarter": "90 days",
-            "year": "365 days",
-        }
-        if time_range in time_mapping:
-            time_filter = f"AND created_at >= NOW() - INTERVAL '{time_mapping[time_range]}'"
-
     # Minimum confidence to include in geospatial queries
     min_confidence = getattr(settings, "location_min_confidence", 40)
 
@@ -91,11 +62,38 @@ async def get_developer_activity(
         LEFT JOIN github_users gu ON r.github_user_login = gu.login
         WHERE (gu.confidence_score >= :min_confidence OR gu.confidence_score IS NULL)
           AND COALESCE(gu.geom, r.geom) && ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326)
-        {domain_filter}
-        {time_filter}
+          AND (:domain IS NULL OR CAST(classification->>'domain' AS text) ILIKE :domain)
+          AND (:time_interval IS NULL OR created_at >= NOW() - CAST(:time_interval AS INTERVAL))
         ORDER BY r.stargazers_count DESC
         LIMIT :limit
     """)
+
+    # Domain pattern matching
+    domain_pattern = None
+    if domain:
+        domain_mapping = {
+            "ai": "%ai%",
+            "cybersecurity": "%cybersecurity%",
+            "healthcare": "%healthcare%",
+            "robotics": "%robotics%",
+            "web": "%web%",
+            "mobile": "%mobile%",
+            "devops": "%devops%",
+            "blockchain": "%blockchain%",
+            "opensource": "%opensource%",
+        }
+        domain_pattern = domain_mapping.get(domain)
+
+    # Time interval pattern matching
+    time_interval = None
+    if time_range:
+        time_mapping = {
+            "week": "7 days",
+            "month": "30 days",
+            "quarter": "90 days",
+            "year": "365 days",
+        }
+        time_interval = time_mapping.get(time_range)
 
     result = await db.execute(
         query,
@@ -106,6 +104,8 @@ async def get_developer_activity(
             "max_lat": max_lat,
             "limit": limit,
             "min_confidence": min_confidence,
+            "domain": domain_pattern,
+            "time_interval": time_interval,
         },
     )
     rows = result.fetchall()
