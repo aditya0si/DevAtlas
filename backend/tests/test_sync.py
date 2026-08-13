@@ -110,6 +110,79 @@ class TestSyncAPI:
             assert data["message"] == "Incremental sync enqueued"
 
     @pytest.mark.asyncio
+    async def test_enqueue_incremental_sync_uses_registered_worker_name(self):
+        """The incremental sync endpoint must enqueue the canonical
+        ``run_incremental_repo_sync`` worker registered in app.workers.main
+        (not the legacy ``run_incremental_sync`` from github_sync.py)."""
+        from app.api.sync import enqueue_incremental_sync
+        from app.workers.main import WorkerSettings
+
+        registered = {func.__name__ for func in WorkerSettings.functions}
+
+        with patch("app.api.sync.get_arq_redis") as mock_get_redis:
+            mock_redis = AsyncMock()
+            mock_job = MagicMock()
+            mock_job.job_id = "test-job-inc"
+            mock_redis.enqueue_job = AsyncMock(return_value=mock_job)
+            mock_get_redis.return_value = mock_redis
+
+            result = await enqueue_incremental_sync()
+
+            assert result["message"] == "Incremental sync enqueued"
+            enqueued = mock_redis.enqueue_job.await_args.args[0]
+            assert enqueued == "run_incremental_repo_sync"
+            assert enqueued in registered
+
+    @pytest.mark.asyncio
+    async def test_enqueue_ai_classification_uses_registered_worker_name(self):
+        """The classify endpoint must enqueue the canonical
+        ``run_classification_worker`` registered in app.workers.main."""
+        from app.api.sync import enqueue_ai_classification
+        from app.workers.main import WorkerSettings
+
+        registered = {func.__name__ for func in WorkerSettings.functions}
+
+        with patch("app.api.sync.get_arq_redis") as mock_get_redis:
+            mock_redis = AsyncMock()
+            mock_job = MagicMock()
+            mock_job.job_id = "test-job-cls"
+            mock_redis.enqueue_job = AsyncMock(return_value=mock_job)
+            mock_get_redis.return_value = mock_redis
+
+            result = await enqueue_ai_classification()
+
+            assert result["message"] == "AI classification enqueued"
+            enqueued = mock_redis.enqueue_job.await_args.args[0]
+            assert enqueued == "run_classification_worker"
+            assert enqueued in registered
+
+    @pytest.mark.asyncio
+    async def test_enqueue_full_pipeline_uses_registered_worker_names(self):
+        """Every job enqueued by the full pipeline must be a registered worker
+        (regression: it previously enqueued the non-existent
+        ``run_ai_classification``)."""
+        from app.api.sync import enqueue_full_pipeline
+        from app.workers.main import WorkerSettings
+
+        registered = {func.__name__ for func in WorkerSettings.functions}
+
+        with patch("app.api.sync.get_arq_redis") as mock_get_redis:
+            mock_redis = AsyncMock()
+            mock_redis.enqueue_job = AsyncMock(return_value=MagicMock(job_id="test-job-pipe"))
+            mock_get_redis.return_value = mock_redis
+
+            result = await enqueue_full_pipeline()
+
+            enqueued = [call.args[0] for call in mock_redis.enqueue_job.call_args_list]
+            assert enqueued, "pipeline should enqueue jobs"
+            assert set(enqueued) == set(result["jobs"].keys())
+
+            missing = sorted(set(enqueued) - registered)
+            assert not missing, f"pipeline enqueues unregistered workers: {missing}"
+            assert "run_classification_worker" in enqueued
+            assert "run_ai_classification" not in enqueued
+
+    @pytest.mark.asyncio
     async def test_get_sync_status_not_found(self, client):
         """Test getting status of non-existent job."""
         with patch("app.api.sync.get_arq_redis") as mock_get_redis:

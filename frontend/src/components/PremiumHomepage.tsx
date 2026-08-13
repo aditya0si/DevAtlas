@@ -4,23 +4,45 @@ import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { 
   Map, TrendingUp, Users, Code2, Sparkles, ArrowRight, 
-  Star, GitFork, Activity, Zap, Globe
+  Star, GitFork, Activity, Zap, Globe, Loader2, AlertTriangle
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { api, EcosystemStats } from '@/lib/api';
 
 interface Stat {
   label: string;
-  value: string;
+  value: number;
+  suffix?: string;
   change?: string;
   trend?: 'up' | 'down';
 }
 
-const stats: Stat[] = [
-  { label: 'Total Developers', value: '50,000+', change: '+12%', trend: 'up' },
-  { label: 'Active Repositories', value: '120,000+', change: '+8%', trend: 'up' },
-  { label: 'Organizations', value: '2,500+', change: '+15%', trend: 'up' },
-  { label: 'Countries', value: '45+', change: '+5%', trend: 'up' },
-];
+/**
+ * Build the four landing-page stat cards purely from the API-backed ecosystem
+ * stats for the selected year. No invented numbers — the only change badge is
+ * the real repository monthly-growth metric.
+ */
+function buildStats(stats: EcosystemStats): Stat[] {
+  const monthlyGrowth = stats.growth_metrics?.monthly_growth;
+  return [
+    { label: 'Total Developers', value: stats.total_developers ?? 0 },
+    {
+      label: 'Active Repositories',
+      value: stats.total_repositories ?? 0,
+      change:
+        typeof monthlyGrowth === 'number' && monthlyGrowth > 0
+          ? `+${monthlyGrowth.toFixed(1)}%`
+          : undefined,
+      trend: 'up',
+    },
+    {
+      label: 'AI Repository %',
+      value: Math.round(stats.ai_repo_percentage ?? 0),
+      suffix: '%',
+    },
+    { label: 'Total Stars', value: stats.total_stars ?? 0 },
+  ];
+}
 
 const features = [
   {
@@ -65,6 +87,7 @@ const AnimatedCounter = ({ value, duration = 2000 }: { value: number; duration?:
 };
 
 interface PremiumHomepageProps {
+  year?: number;
   onExploreMap?: () => void;
 }
 
@@ -122,35 +145,67 @@ const HeroSection = ({ onExploreMap }: { onExploreMap?: () => void }) => (
   </section>
 );
 
-const StatsSection = () => (
+const StatsSection = ({
+  stats,
+  loading,
+  error,
+}: {
+  stats: EcosystemStats | null;
+  loading: boolean;
+  error: string | null;
+}) => (
   <section className="py-16 border-y border-slate-800 bg-slate-900/50">
     <div className="container mx-auto px-4">
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-8">
-        {stats.map((stat, index) => (
-          <motion.div
-            key={stat.label}
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: index * 0.1 }}
-            className="text-center"
-          >
-            <div className="text-3xl md:text-4xl font-bold text-white mb-1">
-              <AnimatedCounter value={parseInt(stat.value.replace(/[^0-9]/g, ''))} />
-              {stat.value.includes('+') ? '+' : ''}
+      {loading && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-8">
+          {[...Array(4)].map((_, i) => (
+            <div key={i} className="text-center">
+              <div className="h-10 w-28 mx-auto mb-3 rounded-lg bg-slate-800 animate-pulse" />
+              <div className="h-3 w-20 mx-auto mb-2 rounded bg-slate-800 animate-pulse" />
+              <div className="h-3 w-12 mx-auto rounded bg-slate-800/60 animate-pulse" />
             </div>
-            <div className="text-slate-400 text-sm">{stat.label}</div>
-            {stat.change && (
-              <div className={cn(
-                'text-xs mt-1 flex items-center justify-center gap-1',
-                stat.trend === 'up' ? 'text-emerald-400' : 'text-red-400'
-              )}>
-                {stat.trend === 'up' ? <TrendingUp className="w-3 h-3" /> : null}
-                {stat.change}
+          ))}
+        </div>
+      )}
+
+      {!loading && error && (
+        <div className="flex items-center justify-center gap-3 py-8 text-sm text-slate-400">
+          <AlertTriangle className="w-5 h-5 text-amber-400" />
+          <span>
+            Couldn&apos;t load ecosystem stats. Showing no data — the rest of the
+            page remains available.
+          </span>
+        </div>
+      )}
+
+      {!loading && !error && stats && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-8">
+          {buildStats(stats).map((stat, index) => (
+            <motion.div
+              key={stat.label}
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: index * 0.1 }}
+              className="text-center"
+            >
+              <div className="text-3xl md:text-4xl font-bold text-white mb-1">
+                <AnimatedCounter value={stat.value} />
+                {stat.suffix ?? ''}
               </div>
-            )}
-          </motion.div>
-        ))}
-      </div>
+              <div className="text-slate-400 text-sm">{stat.label}</div>
+              {stat.change && (
+                <div className={cn(
+                  'text-xs mt-1 flex items-center justify-center gap-1',
+                  stat.trend === 'up' ? 'text-emerald-400' : 'text-red-400'
+                )}>
+                  {stat.trend === 'up' ? <TrendingUp className="w-3 h-3" /> : null}
+                  {stat.change}
+                </div>
+              )}
+            </motion.div>
+          ))}
+        </div>
+      )}
     </div>
   </section>
 );
@@ -240,11 +295,41 @@ const QuickActions = ({ onExploreMap }: { onExploreMap?: () => void }) => (
   </section>
 );
 
-export default function PremiumHomepage({ onExploreMap }: PremiumHomepageProps) {
+export default function PremiumHomepage({ year, onExploreMap }: PremiumHomepageProps) {
+  const [stats, setStats] = useState<EcosystemStats | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoading(true);
+    setError(null);
+
+    api
+      .getEcosystemStats(year, controller.signal)
+      .then((data) => {
+        if (!controller.signal.aborted) setStats(data);
+      })
+      .catch((err) => {
+        if (err?.name === 'AbortError') return;
+        if (!controller.signal.aborted) {
+          setStats(null);
+          setError(err?.message || 'Failed to load ecosystem stats');
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+
+    return () => {
+      controller.abort();
+    };
+  }, [year]);
+
   return (
     <div className="min-h-screen bg-slate-950">
       <HeroSection onExploreMap={onExploreMap} />
-      <StatsSection />
+      <StatsSection stats={stats} loading={loading} error={error} />
       <FeaturesSection />
       <QuickActions onExploreMap={onExploreMap} />
     </div>

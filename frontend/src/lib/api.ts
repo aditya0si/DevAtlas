@@ -3,6 +3,8 @@
  * Provides typed functions for interacting with the DevAtlas FastAPI backend.
  */
 
+import { filterToApiDomain } from '@/lib/domain';
+
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || '/api/v1';
 
 export class APIError extends Error {
@@ -86,13 +88,40 @@ export async function fetchAPI<T>(
 
 // Interfaces
 export interface EcosystemStats {
-  total_developers: number;
   total_repositories: number;
+  total_events: number;
+  active_developers: number;
+  total_developers: number;
   total_stars: number;
   total_forks: number;
   ai_repo_percentage: number;
   top_language: string;
   top_state: string;
+  top_states: Array<{ state: string; repositories: number; rank: number }>;
+  top_languages: Array<{ language: string; count: number }>;
+  top_domains: Array<{ domain: string; count: number }>;
+  growth_metrics: Record<string, number>;
+  // Domain-specific repository counts (returned by /india/stats)
+  ai_repos_count: number;
+  cybersecurity_repos_count: number;
+  healthcare_repos_count: number;
+  robotics_repos_count: number;
+  web_repos_count: number;
+  mobile_repos_count: number;
+  devops_repos_count: number;
+  blockchain_repos_count: number;
+  opensource_repos_count: number;
+}
+
+export interface Insight {
+  id: string;
+  text: string;
+  category: string;
+  region: string | null;
+  metric_type: string;
+  metric_value: number | null;
+  time_range: string;
+  generated_at: string;
 }
 
 export interface GeoJSONFeature {
@@ -110,72 +139,171 @@ export interface GeoJSONFeatureCollection {
 }
 
 export interface StateDashboardData {
-  state_code: string;
-  state_name: string;
-  total_developers: number;
-  total_repositories: number;
-  top_languages: Array<{ language: string; count: number; percentage: number }>;
-  top_domains: Array<{ domain: string; count: number; percentage: number }>;
-  top_repositories: Array<{ id: string; name: string; stars: number; description: string }>;
-  ai_readiness_score: number;
-  growth_rate: number;
+  state: string;
+  repository_count: number;
+  active_developers: number;
+  top_languages: Array<{ language: string; count: number }>;
+  fastest_growing_technologies: Array<{ language: string; count: number }>;
+  ai_summary: string;
+  monthly_growth_percent: number;
+  weekly_growth_percent: number;
+  trending_projects: Array<{ name: string; full_name: string; stars: number; language: string | null }>;
+  top_organizations: Array<{ login: string; repositories: number }>;
+  activity_graph: Array<{ date: string; activity: number }>;
 }
 
 export interface RepositoryDetailsData {
   id: string;
   name: string;
   full_name: string;
-  description: string;
+  description: string | null;
+  html_url: string;
+  language: string | null;
+  languages: Record<string, number> | null;
   stargazers_count: number;
   forks_count: number;
   open_issues_count: number;
-  language: string;
   topics: string[];
-  html_url: string;
-  owner: {
-    login: string;
-    avatar_url: string;
-    location?: string;
-    state?: string;
-  };
+  default_branch: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  pushed_at: string | null;
   classification?: {
     domain?: string;
     industry?: string;
     technology?: string;
     framework?: string;
     difficulty?: string;
-  };
-  created_at: string;
-  updated_at: string;
+  } | null;
+  owner?: {
+    login: string;
+    avatar_url?: string;
+    location?: string;
+    state?: string;
+  } | null;
 }
 
 export interface SemanticSearchResult {
   repository_id: string;
   name: string;
   full_name: string;
-  description: string;
+  description: string | null;
   similarity: number;
-  domain?: string;
-  technology?: string;
+  language: string | null;
+  topics: string[];
   stars: number;
+  html_url: string;
+}
+
+export interface SemanticSearchResponse {
+  query: string;
+  results: SemanticSearchResult[];
+  total: number;
+}
+
+export interface TimeSeriesDataPoint {
+  date: string;
+  value: number;
+}
+
+export interface AnalyticsGraphData {
+  repositories_over_time: TimeSeriesDataPoint[];
+  technology_growth: Array<{ language: string; count: number }>;
+  language_popularity: Array<{ language: string; count: number }>;
+  top_domains: Array<{ domain: string; count: number }>;
+  growth_trend: TimeSeriesDataPoint[];
+  state_comparison: Array<{ state: string; repositories: number }>;
+}
+
+export interface TrendDriver {
+  factor: string;
+  impact: string;
+  description: string;
+  evidence: string[];
+}
+
+export interface UnusualObservation {
+  observation: string;
+  significance: string;
+  deviation: string;
 }
 
 export interface TrendExplanationData {
-  state_code: string;
-  metric_name: string;
-  growth_rate: number;
-  explanation: string;
-  key_drivers: string[];
-  unusual_observations: string[];
+  summary: string;
+  key_drivers: TrendDriver[];
+  unusual_observations: UnusualObservation[];
+  notable_changes: string[];
   confidence_score: number;
+  entity_type: string;
+  entity_name: string;
+  time_range: string;
+  generated_at: string;
 }
 
 export interface StateComparisonData {
-  state1: string;
-  state2: string;
-  comparison_summary: string;
-  metrics_comparison: Record<string, any>;
-  winner: string;
+  state_a: string;
+  state_b: string;
+  repository_count_a: number;
+  repository_count_b: number;
+  developer_activity_a: number;
+  developer_activity_b: number;
+  growth_rate_a: number;
+  growth_rate_b: number;
+  top_languages_a: Array<{ language: string; count: number }>;
+  top_languages_b: Array<{ language: string; count: number }>;
+  top_domains_a: Array<{ domain: string; count: number }>;
+  top_domains_b: Array<{ domain: string; count: number }>;
+  ai_repos_a: number;
+  ai_repos_b: number;
+  cybersecurity_repos_a: number;
+  cybersecurity_repos_b: number;
+  healthcare_repos_a: number;
+  healthcare_repos_b: number;
+  robotics_repos_a: number;
+  robotics_repos_b: number;
+  opensource_repos_a: number;
+  opensource_repos_b: number;
+  avg_stars_a: number;
+  avg_stars_b: number;
+  innovation_score_a: number;
+  innovation_score_b: number;
+  growth_score_a: number;
+  growth_score_b: number;
+  top_organizations_a: string[];
+  top_organizations_b: string[];
+}
+
+export interface ComparisonSummaryData {
+  entity_a: string;
+  entity_b: string;
+  summary: string;
+  winner: string | null;
+  score_difference: number;
+  strengths_a: string[];
+  strengths_b: string[];
+  weaknesses_a: string[];
+  weaknesses_b: string[];
+  opportunities: string[];
+  recommendations: string[];
+  confidence_score: number;
+  generated_at: string;
+}
+
+export interface ComparisonInsightData {
+  insight_type: string;
+  metric: string;
+  winner: string | null;
+  entity_a_value: number | null;
+  entity_b_value: number | null;
+  difference_percent: number;
+  insight_text: string;
+  confidence: string;
+}
+
+export interface StateComparisonResponse {
+  comparison: StateComparisonData;
+  summary: ComparisonSummaryData;
+  insights: ComparisonInsightData[];
 }
 
 export interface ActivityScore {
@@ -203,6 +331,42 @@ export interface EcosystemScore {
   rank: number;
   period_start: string | null;
   period_end: string | null;
+}
+
+// Ecosystem scores for Indian states (GET /india/scores). Computed from real
+// location data (GitHubUser.state + enriched GitHubEvent state fields).
+export interface IndiaEcosystemScore {
+  state: string;
+  developer_activity_score: number;
+  innovation_score: number;
+  open_source_score: number;
+  ai_score: number;
+  cybersecurity_score: number;
+  growth_score: number;
+  overall_score: number;
+  rank: number;
+}
+
+export interface DiscoveryData {
+  trending_repositories: Array<{
+    id: string;
+    name: string;
+    full_name: string;
+    stars: number;
+    language: string | null;
+    description: string | null;
+  }>;
+  trending_technologies: Array<{ language: string; count: number }>;
+  trending_states: Array<{ state: string; repositories: number }>;
+  trending_organizations: Array<{ login: string; repositories: number }>;
+  newest_ai_projects: Array<{
+    id: string;
+    name: string;
+    full_name: string;
+    language: string | null;
+    created_at: string | null;
+  }>;
+  fastest_growing_domains: Array<{ domain: string; count: number }>;
 }
 
 export interface DomainStats {
@@ -249,49 +413,98 @@ export interface AuthResponse {
 // API Methods
 export const api = {
   // Ecosystem & India Overview
-  getEcosystemStats: (year?: number) =>
-    fetchAPI<EcosystemStats>(`/india/stats${year ? `?year=${year}` : ''}`),
+  getEcosystemStats: (year?: number, signal?: AbortSignal) =>
+    fetchAPI<EcosystemStats>(`/india/stats${year ? `?year=${year}` : ''}`, { signal }),
 
-  getIndiaOverview: (year?: number) =>
-    fetchAPI<any>(`/india/overview${year ? `?year=${year}` : ''}`),
+  getInsights: (limit = 10, signal?: AbortSignal) =>
+    fetchAPI<Insight[]>(`/india/insights?limit=${limit}`, { signal }),
 
-  getStateDashboard: (stateCode: string, year?: number) =>
-    fetchAPI<StateDashboardData>(`/india/states/${stateCode}${year ? `?year=${year}` : ''}`),
+  getIndiaOverview: (year?: number, signal?: AbortSignal) =>
+    fetchAPI<any>(`/india/overview${year ? `?year=${year}` : ''}`, { signal }),
+
+  getStateDashboard: (stateCode: string, year?: number, signal?: AbortSignal) =>
+    fetchAPI<StateDashboardData>(`/india/states/${stateCode}${year ? `?year=${year}` : ''}`, { signal }),
 
   // Geospatial Activity
-  getGeospatialActivity: (bbox: string, domain?: string, timeRange?: string) => {
+  getGeospatialActivity: (
+    bbox: string,
+    options: { domain?: string; timeRange?: string; year?: number; limit?: number; signal?: AbortSignal } = {}
+  ) => {
     const params = new URLSearchParams({ bbox });
-    if (domain && domain !== 'All Projects') params.append('domain', domain.toLowerCase());
-    if (timeRange) params.append('time_range', timeRange);
-    return fetchAPI<GeoJSONFeatureCollection>(`/geospatial/activity?${params.toString()}`);
+    const domain =
+      options.domain && options.domain !== 'All Projects'
+        ? filterToApiDomain(options.domain) || options.domain.toLowerCase()
+        : undefined;
+    if (domain) params.append('domain', domain);
+    if (options.timeRange) params.append('time_range', options.timeRange);
+    if (options.year) params.append('year', String(options.year));
+    if (options.limit) params.append('limit', String(options.limit));
+    return fetchAPI<GeoJSONFeatureCollection>(`/geospatial/activity?${params.toString()}`, {
+      signal: options.signal,
+    });
   },
 
-  getGeospatialSummary: () =>
-    fetchAPI<any>('/geospatial/summary'),
+  // Analytics Graphs
+  getAnalyticsGraphs: (timeRange: string = 'month', year?: number, signal?: AbortSignal) => {
+    const params = new URLSearchParams({ time_range: timeRange });
+    if (year) params.append('year', String(year));
+    return fetchAPI<AnalyticsGraphData>(`/india/analytics/graphs?${params.toString()}`, { signal });
+  },
 
   // Repository Details
-  getRepositoryDetails: (repoId: string) =>
-    fetchAPI<RepositoryDetailsData>(`/repositories/${repoId}`),
+  getRepositoryDetails: (repoId: string, signal?: AbortSignal) =>
+    fetchAPI<RepositoryDetailsData>(`/repositories/${repoId}`, { signal }),
 
   // AI & Analytics
-  semanticSearch: (query: string, limit = 10) =>
-    fetchAPI<{ results: SemanticSearchResult[]; total: number }>('/india/search/semantic', {
+  semanticSearch: (query: string, limit = 10, signal?: AbortSignal) =>
+    fetchAPI<SemanticSearchResponse>('/india/search/semantic', {
       method: 'POST',
       body: JSON.stringify({ query, limit }),
+      signal,
     }),
 
-  explainTrends: (stateCode: string) =>
-    fetchAPI<TrendExplanationData>(`/india/trends/explain?state_code=${stateCode}`),
+  explainTrends: (
+    params: {
+      entity_type?: string;
+      entity_name: string;
+      metric_name?: string;
+      current_value: number;
+      previous_value: number;
+      time_range?: string;
+      domain?: string;
+    },
+    signal?: AbortSignal
+  ) =>
+    fetchAPI<TrendExplanationData>('/india/trends/explain', {
+      method: 'POST',
+      body: JSON.stringify({
+        entity_type: params.entity_type || 'state',
+        entity_name: params.entity_name,
+        metric_name: params.metric_name || 'repository_count',
+        current_value: params.current_value,
+        previous_value: params.previous_value,
+        time_range: params.time_range || 'month',
+        ...(params.domain ? { domain: params.domain } : {}),
+      }),
+      signal,
+    }),
 
-  compareStates: (state1: string, state2: string) =>
-    fetchAPI<StateComparisonData>(`/india/compare?state1=${state1}&state2=${state2}`),
+  compareStates: (stateA: string, stateB: string, year?: number, signal?: AbortSignal) => {
+    const params = new URLSearchParams({ state_a: stateA, state_b: stateB });
+    if (year) params.append('year', String(year));
+    return fetchAPI<StateComparisonResponse>(`/india/compare?${params.toString()}`, { signal });
+  },
 
-  getDiscovery: () =>
-    fetchAPI<any>('/india/discovery'),
+  getDiscovery: (signal?: AbortSignal) =>
+    fetchAPI<DiscoveryData>('/india/discovery', { signal }),
+
+  // Ecosystem scores for Indian states (GET /india/scores)
+  getIndiaEcosystemScores: (year?: number, signal?: AbortSignal) =>
+    fetchAPI<IndiaEcosystemScore[]>(`/india/scores${year ? `?year=${year}` : ''}`, { signal }),
 
   // Seed status for lazy-load interstitial
-  getSeedStatus: () =>
-    fetchAPI<{ has_data: boolean; total_repos: number; embedded_repos: number; ready: boolean }>('/india/seed-status'),
+  getSeedStatus: (signal?: AbortSignal) =>
+    fetchAPI<{ has_data: boolean; total_repos: number; embedded_repos: number; ready: boolean }>('/india/seed-status', { signal }),
 
   // Ask DevAtlas Copilot SSE helper
   streamAskDevAtlas: (

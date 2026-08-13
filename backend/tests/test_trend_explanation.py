@@ -1,5 +1,6 @@
 """Tests for Trend Explanation Service and Comparison features."""
 
+import json
 import pytest
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -156,6 +157,160 @@ class TestTrendExplanationService:
         assert data.repository_count_a == 500
         assert data.ai_repos_a == 100
 
+    def test_init_does_not_construct_ai_client(self, db_session):
+        """The service must NOT build a raw AsyncOpenAI client.
+
+        AI generation is routed through AIServiceFactory/FallbackChainProvider,
+        so no-key environments still work via the deterministic fallback.
+        """
+        from app.services.trend_explanation_service import TrendExplanationService
+
+        service = TrendExplanationService(db_session)
+        assert not hasattr(service, "client")
+
+    def test_extract_json_strips_markdown_fences(self):
+        """Provider text may wrap JSON in code fences/prose; extraction must cope."""
+        from app.services.trend_explanation_service import TrendExplanationService
+
+        text = 'Here is the result:\n```json\n{"summary": "Growth driven by AI", "confidence_score": 0.5}\n```\nThat is all.'
+        data = TrendExplanationService._extract_json(text)
+        assert data["summary"] == "Growth driven by AI"
+        assert data["confidence_score"] == 0.5
+
+    @pytest.mark.asyncio
+    async def test_explanation_parses_provider_json(self):
+        """Valid JSON from the provider chain is parsed into a TrendExplanation."""
+        from app.services.trend_explanation_service import (
+            EntityType,
+            TrendDirection,
+            TrendExplanationService,
+        )
+
+        service = TrendExplanationService.__new__(TrendExplanationService)
+
+        valid_json = json.dumps({
+            "summary": "Growth driven by AI framework adoption.",
+            "key_drivers": [
+                {"factor": "AI frameworks", "impact": "high", "description": "More AI repos", "evidence": ["150 new repos"]}
+            ],
+            "unusual_observations": [],
+            "notable_changes": ["FastAPI adoption"],
+            "confidence_score": 0.8,
+        })
+
+        with patch(
+            "app.services.ai_service.generate_text",
+            new=AsyncMock(return_value=f"```json\n{valid_json}\n```"),
+        ):
+            explanation = await service._generate_explanation(
+                entity_type=EntityType.STATE,
+                entity_name="Karnataka",
+                metric_name="repository_count",
+                current_value=500,
+                previous_value=400,
+                pct_change=25.0,
+                direction=TrendDirection.UP,
+                time_range="month",
+                context={},
+            )
+
+        assert explanation.summary == "Growth driven by AI framework adoption."
+        assert explanation.confidence_score == 0.8
+        assert explanation.key_drivers[0].factor == "AI frameworks"
+
+    @pytest.mark.asyncio
+    async def test_explanation_falls_back_to_structured_for_non_json(self):
+        """If the provider returns prose (e.g. the no-key MockAI fallback), the
+        structured explanation is used instead of erroring."""
+        from app.services.trend_explanation_service import (
+            EntityType,
+            TrendDirection,
+            TrendExplanationService,
+        )
+
+        service = TrendExplanationService.__new__(TrendExplanationService)
+
+        with patch(
+            "app.services.ai_service.generate_text",
+            new=AsyncMock(return_value="Analysis: Karnataka leads with strong AI density (+32% YoY)."),
+        ):
+            explanation = await service._generate_explanation(
+                entity_type=EntityType.STATE,
+                entity_name="Karnataka",
+                metric_name="repository_count",
+                current_value=500,
+                previous_value=400,
+                pct_change=25.0,
+                direction=TrendDirection.UP,
+                time_range="month",
+                context={},
+            )
+
+        assert explanation.confidence_score == 0.6
+        assert "increase" in explanation.summary.lower()
+        assert explanation.entity_name == "Karnataka"
+
+    @pytest.mark.asyncio
+    async def test_comparison_summary_routes_through_provider(self):
+        """Comparison summaries must be generated via the provider chain, not a
+        directly-constructed OpenAI client."""
+        from app.services.trend_explanation_service import (
+            ComparisonSummary,
+            StateComparisonData,
+            TrendExplanationService,
+        )
+
+        service = TrendExplanationService.__new__(TrendExplanationService)
+
+        comparison = StateComparisonData(
+            state_a="Karnataka",
+            state_b="Maharashtra",
+            repository_count_a=500,
+            repository_count_b=350,
+            developer_activity_a=200,
+            developer_activity_b=150,
+            growth_rate_a=15.5,
+            growth_rate_b=12.3,
+            top_languages_a=[],
+            top_languages_b=[],
+            top_domains_a=[],
+            top_domains_b=[],
+            ai_repos_a=100,
+            ai_repos_b=75,
+            cybersecurity_repos_a=25,
+            cybersecurity_repos_b=40,
+            healthcare_repos_a=30,
+            healthcare_repos_b=20,
+            robotics_repos_a=15,
+            robotics_repos_b=10,
+            opensource_repos_a=200,
+            opensource_repos_b=150,
+            avg_stars_a=45.5,
+            avg_stars_b=38.2,
+            innovation_score_a=78.5,
+            innovation_score_b=65.3,
+            growth_score_a=82.1,
+            growth_score_b=70.4,
+            top_organizations_a=[],
+            top_organizations_b=[],
+        )
+
+        valid_json = json.dumps({
+            "entity_a": "Karnataka",
+            "entity_b": "Maharashtra",
+            "summary": "Karnataka leads the comparison.",
+            "winner": "Karnataka",
+            "score_difference": 5.0,
+            "confidence_score": 0.85,
+        })
+
+        with patch("app.services.ai_service.generate_text", new=AsyncMock(return_value=valid_json)):
+            summary = await service._generate_comparison_summary(comparison)
+
+        assert isinstance(summary, ComparisonSummary)
+        assert summary.summary == "Karnataka leads the comparison."
+        assert summary.winner == "Karnataka"
+
 
 class TestIndiaSchemasExtensions:
     """Tests for new India schema extensions."""
@@ -242,6 +397,7 @@ class TestIndiaSchemasExtensions:
                 winner="Karnataka",
                 score_difference=15.5,
                 confidence_score=0.9,
+                generated_at=datetime.now(timezone.utc),
             ),
             insights=[
                 ComparisonInsightSchema(
@@ -323,6 +479,38 @@ class TestComparisonEndpoints:
         assert response.status_code == 422
 
     @pytest.mark.asyncio
+    async def test_compare_states_accepts_validated_year(self, client, db_session):
+        """Test that /india/compare accepts and validates the historical year."""
+        # A valid Time Machine year is accepted.
+        response = await client.get(
+            "/api/v1/india/compare",
+            params={"state_a": "Bengaluru", "state_b": "Mumbai", "year": 2024},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert "comparison" in data
+        assert "summary" in data
+        assert "insights" in data
+
+        # Years outside the supported range are rejected (422).
+        for invalid_year in (1999, 2101):
+            response = await client.get(
+                "/api/v1/india/compare",
+                params={"state_a": "Bengaluru", "state_b": "Mumbai", "year": invalid_year},
+            )
+            assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_compare_insights_accepts_validated_year(self, client, db_session):
+        """Test that /india/compare/insights also accepts a validated year."""
+        response = await client.get(
+            "/api/v1/india/compare/insights",
+            params={"state_a": "Bengaluru", "state_b": "Mumbai", "year": 2023},
+        )
+        assert response.status_code == 200
+        assert isinstance(response.json(), list)
+
+    @pytest.mark.asyncio
     async def test_compare_insights_endpoint(self, client, db_session):
         """Test GET /api/v1/india/compare/insights endpoint."""
         response = await client.get(
@@ -359,14 +547,17 @@ class TestComparisonEndpoints:
     @pytest.mark.asyncio
     async def test_trend_explain_validation(self, client, db_session):
         """Test trend explain endpoint validation."""
-        # Missing required fields
+        # The request body is typed with the TrendExplainRequest schema, so the
+        # required fields (entity_name, current_value, previous_value) are
+        # enforced at the API boundary.
         response = await client.post(
             "/api/v1/india/trends/explain",
             json={"entity_name": "Karnataka"},
         )
         assert response.status_code == 422
 
-        # Invalid entity_type
+        # Invalid entity_type is still tolerated: the field is a free string in
+        # the schema and the endpoint falls back to STATE.
         response = await client.post(
             "/api/v1/india/trends/explain",
             json={
@@ -403,9 +594,9 @@ class TestCompareStatesComponent:
     def test_radar_chart_metrics_normalization(self):
         """Test radar chart metrics normalization."""
         metrics = [
-            {" label": "Repos", "a": 500, "b": 350 },
-            {" label": "Developers", "a": 200, "b": 150 },
-            {" label": "Growth", "a": 15.5, "b": 12.3 },
+            {"label": "Repos", "a": 500, "b": 350},
+            {"label": "Developers", "a": 200, "b": 150},
+            {"label": "Growth", "a": 15.5, "b": 12.3},
         ]
 
         max_val = max(max(m["a"], m["b"]) for m in metrics)

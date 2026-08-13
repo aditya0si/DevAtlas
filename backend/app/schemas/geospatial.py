@@ -6,6 +6,17 @@ from typing import Optional
 from pydantic import BaseModel  # noqa: E402  # noqa: E402  # noqa: E402
 
 
+class GeoJSONFeature(BaseModel):
+    type: str = "Feature"
+    geometry: dict
+    properties: dict
+
+
+class GeoJSONFeatureCollection(BaseModel):
+    type: str = "FeatureCollection"
+    features: list[GeoJSONFeature]
+
+
 class GeoJSONPoint(BaseModel):
     type: str = "Point"
     coordinates: tuple[float, float]

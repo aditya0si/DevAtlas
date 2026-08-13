@@ -84,15 +84,14 @@ class LocationRepository:
         if not user or user.longitude is None or user.latitude is None:
             return
             
-        # Update user geom
-        geom_val = f"ST_SetSRID(ST_MakePoint({user.longitude}, {user.latitude}), 4326)"
+        # Update user geom (parameterized - never interpolate coordinates into SQL)
         await self.db.execute(
-            text(f"""
-                UPDATE github_users 
-                SET geom = {geom_val}
+            text("""
+                UPDATE github_users
+                SET geom = ST_SetSRID(ST_MakePoint(:longitude, :latitude), 4326)
                 WHERE login = :login
             """),
-            {"login": login}
+            {"login": login, "longitude": user.longitude, "latitude": user.latitude},
         )
         
         # Link repositories to user if not already linked

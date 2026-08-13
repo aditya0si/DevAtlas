@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING, Any
 
 import httpx
-from openai import AsyncOpenAI
 
 from app.core.config import get_settings
 from app.repositories.github_repository import GitHubRepository
+from app.services.ai_service import AIServiceFactory
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,31 +15,44 @@ settings = get_settings()
 
 
 class EmbeddingService:
+    """Generate repository/query embeddings.
+
+    Embeddings are generated through the AI provider fallback chain
+    (``AIServiceFactory``/``FallbackChainProvider``), so the service stays
+    functional in no-key environments: without an ``OPENAI_API_KEY`` it falls
+    back to the deterministic local provider instead of raising at client
+    construction time.
+    """
+
     def __init__(self, db: "AsyncSession") -> None:
         self.db = db
         self.repository = GitHubRepository(db)
-        self.client = AsyncOpenAI(api_key=settings.openai_api_key)
-        self.model = settings.embedding_model
-        self.dimensions = settings.embedding_dimensions
+        self.provider = AIServiceFactory.get_provider()
         self.http_client = httpx.AsyncClient(timeout=30.0)
 
     async def embed_repositories(self, limit: int = 100, batch_size: int = 100) -> None:
         repositories = await self.repository.get_repositories_for_classification(limit=limit)
         for i in range(0, len(repositories), batch_size):
             batch = repositories[i : i + batch_size]
-            texts = [
-                self._build_embedding_text(repo)
-                for repo in batch
-            ]
-            response = await self.client.embeddings.create(model=self.model, input=texts, dimensions=self.dimensions)
-            for repo, embedding_data in zip(batch, response.data):
+            for repo in batch:
+                text = self._build_embedding_text(repo)
+                embedding = await self.generate_embedding(text)
                 await self.repository.update_classification(
                     repo.id,
                     {
                         **(repo.classification or {}),
-                        "embedding": embedding_data.embedding,
+                        "embedding": embedding,
                     },
                 )
+
+    async def generate_embedding(self, text: str) -> list[float]:
+        """Generate an embedding through the AI provider fallback chain.
+
+        Delegates to ``AIServiceFactory`` so OpenAI -> Gemini -> Ollama ->
+        deterministic local fallback semantics are shared with the rest of the
+        codebase (see ``app.services.ai_service.FallbackChainProvider``).
+        """
+        return await self.provider.generate_embedding(text)
 
     def _build_embedding_text(self, repo: Any) -> str:
         """Build text for embedding from repository data."""

@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 from typing import Optional
 from pydantic import BaseModel
-from sqlalchemy import select, func
+from sqlalchemy import select, literal, Float
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.github import Repository
@@ -86,6 +86,10 @@ class RAGService:
                     "- Context: India developer ecosystem telemetry across Bengaluru, Hyderabad, Mumbai, and Delhi NCR."
                 )
         except Exception:
+            # A failed embedding/vector statement aborts the underlying Postgres
+            # transaction; roll back so subsequent statements on this session do
+            # not fail with InFailedSQLTransactionError.
+            await self.db.rollback()
             formatted_context_parts.append(
                 "- Context: India developer ecosystem telemetry across Bengaluru, Hyderabad, Mumbai, and Delhi NCR."
             )
@@ -108,7 +112,7 @@ class RAGService:
 
     async def _keyword_search(self, query: str, limit: int = 5) -> list[tuple[Repository, float]]:
         try:
-            keyword_score = func.literal(0.6).label("score")
+            keyword_score = literal(0.6, type_=Float).label("score")
             stmt = (
                 select(Repository, keyword_score)
                 .where(Repository.description.ilike(f"%{query}%"))

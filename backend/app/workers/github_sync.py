@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import get_settings
 from app.core.database import engine
-from app.core.database import engine
 from app.repositories.github_repository import GitHubRepository
 from app.services.github_service import GitHubService
 from app.services.location_intelligence_service import LocationIntelligenceService

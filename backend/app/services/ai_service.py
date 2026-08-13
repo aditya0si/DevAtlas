@@ -134,6 +134,8 @@ class OllamaProvider(AIProvider):
         )
         result = response.json()
         raw = result.get("embedding", [])
+        if not raw:
+            raise RuntimeError(f"Ollama returned an empty embedding for model {self.embedding_model}")
         if len(raw) != self.embedding_dims and len(raw) > 0:
             if len(raw) < self.embedding_dims:
                 raw = raw + [0.0] * (self.embedding_dims - len(raw))
@@ -286,4 +288,19 @@ class AIServiceFactory:
     @staticmethod
     def get_provider() -> AIProvider:
         return FallbackChainProvider()
+
+
+async def generate_text(system_prompt: str, user_prompt: str) -> str:
+    """Generate plain text through the fallback provider chain.
+
+    Convenience wrapper used by services that only need the final text (e.g.
+    InsightService and TrendExplanationService) so they never construct an AI
+    client directly — they delegate to AIServiceFactory/FallbackChainProvider,
+    which stays functional in no-key environments (MockAI fallback).
+    """
+    provider = AIServiceFactory.get_provider()
+    chunks: list[str] = []
+    async for chunk in provider.stream_text(system_prompt, user_prompt):
+        chunks.append(chunk)
+    return "".join(chunks)
 

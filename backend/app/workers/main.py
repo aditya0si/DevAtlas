@@ -5,8 +5,8 @@ from app.core.config import get_settings
 
 from app.workers.repo_ingestion_worker import run_repo_ingestion
 from app.workers.user_enrichment_worker import run_user_enrichment
-from app.workers.incremental_sync_worker import run_incremental_sync
-from app.workers.ai_classification_worker import run_ai_classification
+from app.workers.incremental_sync_worker import run_incremental_repo_sync
+from app.workers.ai_classification_worker import run_classification_worker
 from app.workers.analytics_worker import run_analytics_worker
 from app.workers.push_event_ingestion_worker import run_push_event_ingestion
 from app.workers.event_enrichment_worker import run_event_enrichment
@@ -21,8 +21,8 @@ class WorkerSettings:
     functions = [
         run_repo_ingestion,
         run_user_enrichment,
-        run_incremental_sync,
-        run_ai_classification,
+        run_incremental_repo_sync,
+        run_classification_worker,
         run_analytics_worker,
         run_push_event_ingestion,
         run_event_enrichment,
@@ -31,14 +31,14 @@ class WorkerSettings:
         run_aggregation,
     ]
     
-    redis_settings = RedisSettings.from_dsn(settings.REDIS_URL) if settings.REDIS_URL else RedisSettings()
+    redis_settings = RedisSettings.from_dsn(settings.redis_url) if settings.redis_url else RedisSettings()
     
     cron_jobs = [
         # Existing workers
         cron(run_repo_ingestion, hour=0, minute=0),
-        cron(run_incremental_sync, minute={0, 15, 30, 45}),
+        cron(run_incremental_repo_sync, minute={0, 15, 30, 45}),
         cron(run_user_enrichment, minute=10),
-        cron(run_ai_classification, minute=20),
+        cron(run_classification_worker, minute=20),
         cron(run_analytics_worker, hour=1, minute=0),
         
         # Push Event Ingestion - every 2 hours at :30

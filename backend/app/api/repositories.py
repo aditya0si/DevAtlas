@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_db
 from app.core.cache import get_cache_service
 from app.models.github import Repository
-from app.schemas.github import RepositoryResponse
+from app.schemas.github import RepositoryDetailResponse, RepositoryOwnerResponse, RepositoryResponse
 
 router = APIRouter()
 
@@ -47,10 +47,20 @@ async def list_repositories(
     return response
 
 
-@router.get("/{repository_id}", response_model=RepositoryResponse)
-async def get_repository(repository_id: str, db: AsyncSession = Depends(get_db)) -> RepositoryResponse:
+@router.get("/{repository_id}", response_model=RepositoryDetailResponse)
+async def get_repository(repository_id: str, db: AsyncSession = Depends(get_db)) -> RepositoryDetailResponse:
     result = await db.execute(select(Repository).where(Repository.id == repository_id))
     row = result.scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repository not found")
-    return RepositoryResponse.model_validate(row)
+
+    base = RepositoryResponse.model_validate(row)
+    owner = None
+    if row.owner:
+        owner = RepositoryOwnerResponse(
+            login=row.owner.login,
+            avatar_url=row.owner.avatar_url,
+            location=row.owner.normalized_location or row.owner.raw_location,
+            state=row.owner.state,
+        )
+    return RepositoryDetailResponse(**base.model_dump(), owner=owner)

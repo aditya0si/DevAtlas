@@ -12,18 +12,7 @@ import {
   Award
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-
-interface EcosystemScore {
-  state: string;
-  developer_activity_score: number;
-  innovation_score: number;
-  open_source_score: number;
-  ai_score: number;
-  cybersecurity_score: number;
-  growth_score: number;
-  overall_score: number;
-  rank: number;
-}
+import { api, IndiaEcosystemScore } from '@/lib/api';
 
 type MetricType = 'overall' | 'ai' | 'cybersecurity' | 'growth';
 
@@ -94,28 +83,29 @@ function MetricButton({ metric, active, onClick }: {
 }
 
 export default function EcosystemScores() {
-  const [scores, setScores] = useState<EcosystemScore[]>([]);
+  const [scores, setScores] = useState<IndiaEcosystemScore[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedMetric, setSelectedMetric] = useState<MetricType>('overall');
 
   useEffect(() => {
+    const controller = new AbortController();
     const fetchScores = async () => {
       try {
-        const response = await fetch('/api/v1/india/scores');
-        if (!response.ok) throw new Error('Failed to fetch scores');
-        const data = await response.json();
-        setScores(data);
+        const data = await api.getIndiaEcosystemScores(undefined, controller.signal);
+        if (!controller.signal.aborted) setScores(data);
       } catch (error) {
+        if ((error as { name?: string })?.name === 'AbortError') return;
         console.error('Failed to fetch ecosystem scores', error);
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       }
     };
 
     fetchScores();
+    return () => controller.abort();
   }, []);
 
-  const getScoreValue = (score: EcosystemScore): number => {
+  const getScoreValue = (score: IndiaEcosystemScore): number => {
     switch (selectedMetric) {
       case 'ai': return score.ai_score;
       case 'cybersecurity': return score.cybersecurity_score;

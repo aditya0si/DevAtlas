@@ -27,6 +27,12 @@ class EcosystemStatsResponse(BaseModel):
     total_repositories: int
     total_events: int
     active_developers: int
+    total_developers: int = 0
+    total_stars: int = 0
+    total_forks: int = 0
+    ai_repo_percentage: float = 0.0
+    top_language: str = ""
+    top_state: str = ""
     top_states: list[dict[str, Any]]
     top_languages: list[dict[str, Any]]
     top_domains: list[dict[str, Any]]

@@ -10,16 +10,12 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 
-from app.core.config import get_settings
 from app.repositories.github_repository import GitHubRepository
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
-
-settings = get_settings()
 
 
 class EntityType(str, Enum):
@@ -136,7 +132,9 @@ class TrendExplanationService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
         self.repository = GitHubRepository(db)
-        self.client = AsyncOpenAI(api_key=settings.openai_api_key)
+        # No direct AI client: AI generation is routed through
+        # AIServiceFactory/FallbackChainProvider so the service still works
+        # (structured fallbacks) when no API key is configured.
 
     async def explain_trend(
         self,
@@ -212,17 +210,18 @@ class TrendExplanationService:
         # Build query filters
         filters = []
         if domain:
-            filters.append(Repository.classification["domain"].astext.ilike(f"%{domain}%"))
+            filters.append(Repository.classification.op("->>")("domain").ilike(f"%{domain}%"))
 
         # Get repository categories
         if entity_type == EntityType.STATE:
             filters.append(Repository.owner_login.ilike(f"%{entity_name}%"))
 
         if filters:
+            domain_expr = Repository.classification.op("->>")("domain").label("domain")
             cat_result = await self.db.execute(
-                select(Repository.classification["domain"].astext, func.count(Repository.id).label("count"))
+                select(domain_expr, func.count(Repository.id).label("count"))
                 .where(*filters)
-                .group_by(Repository.classification["domain"].astext)
+                .group_by(domain_expr)
                 .order_by(func.count(Repository.id).desc())
                 .limit(5)
             )
@@ -274,6 +273,26 @@ class TrendExplanationService:
 
         return context
 
+    @staticmethod
+    def _extract_json(text: str) -> dict[str, Any]:
+        """Extract a JSON object from provider text.
+
+        Providers may wrap the JSON in markdown code fences or surround it with
+        prose; this strips those and parses the first balanced ``{...}`` block.
+        """
+        import json
+        import re
+
+        cleaned = text.strip()
+        fence_match = re.search(r"```(?:json)?\s*(.*?)```", cleaned, re.DOTALL)
+        if fence_match:
+            cleaned = fence_match.group(1).strip()
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            cleaned = cleaned[start : end + 1]
+        return json.loads(cleaned)
+
     async def _generate_explanation(
         self,
         entity_type: EntityType,
@@ -300,39 +319,27 @@ class TrendExplanationService:
         )
 
         try:
-            response = await self.client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": """You are an expert AI analyst specializing in developer ecosystems.
+            from app.services.ai_service import generate_text
+
+            system_prompt = """You are an expert AI analyst specializing in developer ecosystems.
 Your explanations should:
 - Explain the LIKELY CAUSES of trends, not just describe numbers
 - Reference specific technologies, organizations, and patterns
 - Be confident and definitive
 - Use data-driven reasoning
 - Highlight unusual observations
-- Provide actionable insights""",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.3,
-                max_tokens=800,
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "TrendExplanation",
-                        "schema": TrendExplanation.model_json_schema(),
-                    },
-                },
-            )
+- Provide actionable insights"""
 
-            import json
-
-            explanation_data = json.loads(response.choices[0].message.content)
+            text = await generate_text(system_prompt=system_prompt, user_prompt=prompt)
+            explanation_data = self._extract_json(text)
+            # Defensive: ensure the identity fields are always present even if a
+            # provider omits them from the JSON payload.
+            explanation_data.setdefault("entity_type", entity_type)
+            explanation_data.setdefault("entity_name", entity_name)
+            explanation_data.setdefault("time_range", time_range)
             return TrendExplanation(**explanation_data)
 
-        except Exception as e:
+        except Exception:
             # Fallback to structured explanation without AI
             return self._generate_structured_explanation(
                 entity_type=entity_type,
@@ -453,15 +460,24 @@ Focus on explaining WHY this happened, not just WHAT happened."""
         state_a: str,
         state_b: str,
         domain: str | None = None,
+        year: int | None = None,
     ) -> tuple[StateComparisonData, ComparisonSummary, list[ComparisonInsight]]:
         """Generate comprehensive comparison between two states.
+
+        Args:
+            state_a: First state to compare
+            state_b: Second state to compare
+            domain: Optional domain filter
+            year: Optional calendar year filter applied to repository/event
+                metrics (mirrors the Time Machine behaviour of the other
+                India intelligence endpoints).
 
         Returns:
             Tuple of (comparison_data, summary, insights)
         """
         # Gather data for both states
-        data_a = await self._gather_state_data(state_a, domain)
-        data_b = await self._gather_state_data(state_b, domain)
+        data_a = await self._gather_state_data(state_a, domain, year)
+        data_b = await self._gather_state_data(state_b, domain, year)
 
         # Create comparison data object
         comparison = StateComparisonData(
@@ -507,8 +523,16 @@ Focus on explaining WHY this happened, not just WHAT happened."""
         self,
         state: str,
         domain: str | None,
+        year: int | None = None,
     ) -> dict[str, Any]:
-        """Gather comprehensive data for a state."""
+        """Gather comprehensive data for a state.
+
+        When ``year`` is provided, repository-derived metrics are restricted to
+        repositories created during that calendar year and event-derived metrics
+        to events occurring in that year (matching the Time Machine semantics of
+        the other India intelligence endpoints). Growth is then computed
+        year-over-year instead of month-over-month.
+        """
         from sqlalchemy import func, select
         from app.models.github import Repository, GitHubEvent
 
@@ -516,10 +540,23 @@ Focus on explaining WHY this happened, not just WHAT happened."""
         month_ago = now - timedelta(days=30)
         two_months_ago = now - timedelta(days=60)
 
+        # Optional historical year window.
+        year_start = year_end = None
+        if year is not None:
+            year_start = datetime(year, 1, 1, tzinfo=timezone.utc)
+            year_end = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+
         # Build filters
         base_filters = [Repository.owner_login.ilike(f"%{state}%")]
         if domain:
-            base_filters.append(Repository.classification["domain"].astext.ilike(f"%{domain}%"))
+            base_filters.append(Repository.classification.op("->>")("domain").ilike(f"%{domain}%"))
+        if year_start is not None:
+            base_filters.extend(
+                [
+                    Repository.created_at >= year_start,
+                    Repository.created_at < year_end,
+                ]
+            )
 
         # Repository count
         repo_result = await self.db.execute(
@@ -527,32 +564,53 @@ Focus on explaining WHY this happened, not just WHAT happened."""
         )
         repo_count = repo_result.scalar() or 0
 
-        # Developer activity
-        dev_result = await self.db.execute(
+        # Developer activity (last 30 days, or within the requested year)
+        dev_query = (
             select(func.count(func.distinct(GitHubEvent.actor_login)))
             .join(Repository, GitHubEvent.repository_id == Repository.id)
             .where(Repository.owner_login.ilike(f"%{state}%"))
-            .where(GitHubEvent.created_at >= month_ago)
         )
-        developer_count = dev_result.scalar() or 0
+        if year_start is not None:
+            dev_query = dev_query.where(
+                GitHubEvent.created_at >= year_start, GitHubEvent.created_at < year_end
+            )
+        else:
+            dev_query = dev_query.where(GitHubEvent.created_at >= month_ago)
+        developer_count = (await self.db.execute(dev_query)).scalar() or 0
 
         # Growth rate
-        current_month_result = await self.db.execute(
-            select(func.count(Repository.id))
-            .where(Repository.owner_login.ilike(f"%{state}%"))
-            .where(Repository.created_at >= month_ago)
-        )
-        current_month = current_month_result.scalar() or 0
+        if year_start is not None:
+            # Year-over-year growth: repos created this calendar year vs the
+            # previous calendar year.
+            prev_year_start = datetime(year - 1, 1, 1, tzinfo=timezone.utc)
+            prev_year_end = year_start
+            prev_year_result = await self.db.execute(
+                select(func.count(Repository.id))
+                .where(Repository.owner_login.ilike(f"%{state}%"))
+                .where(
+                    Repository.created_at >= prev_year_start,
+                    Repository.created_at < prev_year_end,
+                )
+            )
+            prev_year_count = prev_year_result.scalar() or 0
+            growth_rate = ((repo_count - prev_year_count) / max(prev_year_count, 1)) * 100
+        else:
+            current_month_result = await self.db.execute(
+                select(func.count(Repository.id))
+                .where(Repository.owner_login.ilike(f"%{state}%"))
+                .where(Repository.created_at >= month_ago)
+            )
+            current_month = current_month_result.scalar() or 0
 
-        prev_month_result = await self.db.execute(
-            select(func.count(Repository.id))
-            .where(Repository.owner_login.ilike(f"%{state}%"))
-            .where(Repository.created_at >= two_months_ago)
-            .where(Repository.created_at < month_ago)
-        )
-        prev_month = prev_month_result.scalar() or 0
+            prev_month_result = await self.db.execute(
+                select(func.count(Repository.id))
+                .where(Repository.owner_login.ilike(f"%{state}%"))
+                .where(Repository.created_at >= two_months_ago)
+                .where(Repository.created_at < month_ago)
+            )
+            prev_month = prev_month_result.scalar() or 0
 
-        growth_rate = ((current_month - prev_month) / max(prev_month, 1)) * 100
+            growth_rate = ((current_month - prev_month) / max(prev_month, 1)) * 100
 
         # Top languages
         lang_result = await self.db.execute(
@@ -566,11 +624,12 @@ Focus on explaining WHY this happened, not just WHAT happened."""
         top_languages = [{"language": row.language, "count": row.count} for row in lang_result.fetchall()]
 
         # Top domains
+        domain_expr = Repository.classification.op("->>")("domain").label("domain")
         domain_result = await self.db.execute(
-            select(Repository.classification["domain"].astext, func.count(Repository.id).label("count"))
+            select(domain_expr, func.count(Repository.id).label("count"))
             .where(*base_filters)
             .where(Repository.classification.isnot(None))
-            .group_by(Repository.classification["domain"].astext)
+            .group_by(domain_expr)
             .order_by(func.count(Repository.id).desc())
             .limit(5)
         )
@@ -582,7 +641,7 @@ Focus on explaining WHY this happened, not just WHAT happened."""
             count_result = await self.db.execute(
                 select(func.count(Repository.id))
                 .where(*base_filters)
-                .where(Repository.classification["domain"].astext.ilike(f"%{dom}%"))
+                .where(Repository.classification.op("->>")("domain").ilike(f"%{dom}%"))
             )
             domain_counts[dom] = count_result.scalar() or 0
 
@@ -591,7 +650,7 @@ Focus on explaining WHY this happened, not just WHAT happened."""
             select(func.avg(Repository.stargazers_count))
             .where(*base_filters)
         )
-        avg_stars = stars_result.scalar() or 0.0
+        avg_stars = float(stars_result.scalar() or 0.0)
 
         # Top organizations
         org_result = await self.db.execute(
@@ -628,35 +687,23 @@ Focus on explaining WHY this happened, not just WHAT happened."""
         prompt = self._build_comparison_prompt(comparison)
 
         try:
-            response = await self.client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": """You are an expert analyst comparing developer ecosystems.
+            from app.services.ai_service import generate_text
+
+            system_prompt = """You are an expert analyst comparing developer ecosystems.
 Provide data-driven comparisons that:
 - Highlight strengths and weaknesses objectively
 - Identify emerging opportunities
 - Make actionable recommendations
 - Avoid hallucination - only use provided data
-- Be confident and definitive""",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.3,
-                max_tokens=600,
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "ComparisonSummary",
-                        "schema": ComparisonSummary.model_json_schema(),
-                    },
-                },
-            )
+- Be confident and definitive"""
 
-            import json
-
-            summary_data = json.loads(response.choices[0].message.content)
+            text = await generate_text(system_prompt=system_prompt, user_prompt=prompt)
+            summary_data = self._extract_json(text)
+            # Defensive: fill identity fields from the comparison when a
+            # provider omits them from the JSON payload.
+            summary_data.setdefault("entity_a", comparison.state_a)
+            summary_data.setdefault("entity_b", comparison.state_b)
+            summary_data.setdefault("generated_at", datetime.now(timezone.utc))
             return ComparisonSummary(**summary_data)
 
         except Exception:

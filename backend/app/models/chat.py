@@ -34,7 +34,7 @@ class ChatMessage(Base):
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
     session_id: Mapped[str] = mapped_column(
-        String(255), ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=False), ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False, index=True
     )
     role: Mapped[str] = mapped_column(String(50), nullable=False)  # "user", "assistant", "system"
     content: Mapped[str] = mapped_column(Text, nullable=False)

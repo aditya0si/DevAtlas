@@ -1,29 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, Sparkles, Clock, TrendingUp, X, ArrowRight } from 'lucide-react';
-import { cn } from '@/lib/utils';
-
-interface SearchResult {
-  id: string;
-  title: string;
-  description: string;
-  type: 'state' | 'skill' | 'topic';
-  relevance: number;
-}
-
-interface SemanticSearchResult {
-  repository_id: string;
-  name: string;
-  full_name: string;
-  description: string;
-  similarity: number;
-  language: string;
-  topics: string[];
-  stars: number;
-  html_url: string;
-}
+import { Search, Clock, TrendingUp, X, ArrowRight, Star, Code2 } from 'lucide-react';
+import { api, SemanticSearchResult } from '@/lib/api';
 
 const recentSearches = ['Bangalore tech ecosystem', 'Python developers in India', 'React vs Vue adoption'];
 const trendingSearches = ['AI/ML skills', 'Remote work trends', 'Startup ecosystem'];
@@ -31,41 +11,36 @@ const trendingSearches = ['AI/ML skills', 'Remote work trends', 'Startup ecosyst
 const SemanticSearch = () => {
   const [query, setQuery] = useState('');
   const [isFocused, setIsFocused] = useState(false);
-  const [results, setResults] = useState<SearchResult[]>([]);
+  const [results, setResults] = useState<SemanticSearchResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+  const controllerRef = useRef<AbortController | null>(null);
+
+  // Abort any in-flight search when the component unmounts.
+  useEffect(() => {
+    return () => controllerRef.current?.abort();
+  }, []);
 
   const handleSearch = async (searchQuery: string) => {
     if (!searchQuery.trim()) {
       setResults([]);
       return;
     }
+    // Abort any in-flight search before starting a new one.
+    controllerRef.current?.abort();
+    const controller = new AbortController();
+    controllerRef.current = controller;
+
     setIsSearching(true);
     try {
-      const response = await fetch('/api/v1/india/search/semantic', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: searchQuery, limit: 10 })
-      });
-      if (response.ok) {
-        const data = await response.json();
-        const mappedResults = (data.results || []).map((r: SemanticSearchResult) => ({
-          id: r.repository_id,
-          title: r.name,
-          description: r.description || `Repository: ${r.full_name}`,
-          type: 'topic', // generic mapping for now
-          relevance: r.similarity,
-          url: r.html_url
-        }));
-        setResults(mappedResults);
-      } else {
-        console.error('Search failed', await response.text());
-        setResults([]);
-      }
+      const data = await api.semanticSearch(searchQuery, 10, controller.signal);
+      if (controller.signal.aborted) return;
+      setResults(data.results || []);
     } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') return;
       console.error('Search error', error);
       setResults([]);
     } finally {
-      setIsSearching(false);
+      if (!controller.signal.aborted) setIsSearching(false);
     }
   };
 
@@ -158,38 +133,49 @@ const SemanticSearch = () => {
             >
               {results.map((result, index) => (
                 <motion.button
-                  key={result.id}
+                  key={result.repository_id}
                   initial={{ opacity: 0, y: -10 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: index * 0.05 }}
                   onClick={() => {
-                    const url = (result as any).url;
-                    if (url) window.open(url, '_blank');
+                    if (result.html_url) window.open(result.html_url, '_blank');
                   }}
                   className="w-full p-4 text-left rounded-xl hover:bg-slate-700/50 transition-colors flex items-start gap-4"
                 >
-                  <div className={cn(
-                    'w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0',
-                    result.type === 'state' ? 'bg-indigo-500/20 text-indigo-400' :
-                    result.type === 'skill' ? 'bg-emerald-500/20 text-emerald-400' :
-                    'bg-amber-500/20 text-amber-400'
-                  )}>
-                    {result.type === 'state' ? <Search className="w-5 h-5" /> :
-                     result.type === 'skill' ? <Sparkles className="w-5 h-5" /> :
-                     <TrendingUp className="w-5 h-5" />}
+                  <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 bg-indigo-500/20 text-indigo-400">
+                    <Code2 className="w-5 h-5" />
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
-                      <span className="font-medium text-white">{result.title}</span>
-                      <span className="px-2 py-0.5 rounded-full bg-slate-700 text-slate-400 text-xs capitalize">
-                        {result.type}
-                      </span>
+                      <span className="font-medium text-white truncate">{result.name}</span>
+                      {result.language && (
+                        <span className="px-2 py-0.5 rounded-full bg-slate-700 text-slate-400 text-xs">
+                          {result.language}
+                        </span>
+                      )}
                     </div>
-                    <p className="text-slate-400 text-sm truncate">{result.description}</p>
+                    <p className="text-slate-400 text-sm truncate">
+                      {result.description || result.full_name}
+                    </p>
+                    {result.topics && result.topics.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {result.topics.slice(0, 3).map((topic) => (
+                          <span key={topic} className="px-1.5 py-0.5 rounded bg-slate-700/50 text-slate-500 text-[10px]">
+                            {topic}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                  <div className="flex items-center gap-1 text-slate-400">
-                    <span className="text-sm">{Math.round(result.relevance * 100)}%</span>
-                    <ArrowRight className="w-4 h-4" />
+                  <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                    <span className="text-sm text-indigo-400 font-medium">
+                      {Math.round(result.similarity * 100)}%
+                    </span>
+                    <span className="flex items-center gap-1 text-xs text-yellow-400">
+                      <Star size={12} fill="currentColor" />
+                      {result.stars.toLocaleString()}
+                    </span>
+                    <ArrowRight className="w-4 h-4 text-slate-500" />
                   </div>
                 </motion.button>
               ))}

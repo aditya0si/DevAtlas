@@ -12,59 +12,18 @@ import {
   Sparkles
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-
-interface ComparisonData {
-  state_a: string;
-  state_b: string;
-  repository_count_a: number;
-  repository_count_b: number;
-  developer_activity_a: number;
-  developer_activity_b: number;
-  growth_rate_a: number;
-  growth_rate_b: number;
-  top_languages_a: Array<{ language: string; count: number }>;
-  top_languages_b: Array<{ language: string; count: number }>;
-  ai_repos_a: number;
-  ai_repos_b: number;
-  cybersecurity_repos_a: number;
-  cybersecurity_repos_b: number;
-  healthcare_repos_a: number;
-  healthcare_repos_b: number;
-  robotics_repos_a: number;
-  robotics_repos_b: number;
-  opensource_repos_a: number;
-  opensource_repos_b: number;
-  avg_stars_a: number;
-  avg_stars_b: number;
-  innovation_score_a: number;
-  innovation_score_b: number;
-  growth_score_a: number;
-  growth_score_b: number;
-  top_organizations_a: string[];
-  top_organizations_b: string[];
-}
-
-interface ComparisonSummary {
-  entity_a: string;
-  entity_b: string;
-  summary: string;
-  winner: string | null;
-  score_difference: number;
-  strengths_a: string[];
-  strengths_b: string[];
-  weaknesses_a: string[];
-  weaknesses_b: string[];
-  opportunities: string[];
-  recommendations: string[];
-  confidence_score: number;
-}
+import { api, StateComparisonData, ComparisonSummaryData } from "@/lib/api";
 
 interface CompareStatesProps {
   initialStateA?: string;
   initialStateB?: string;
+  year?: number;
 }
 
-const INDIAN_STATES = [
+// The comparison endpoint matches against repository owner names, so the
+// selectable options are Indian tech hubs (cities) rather than administrative
+// states. Keep the constant name accurate to its contents.
+const INDIAN_CITIES = [
   "Bengaluru", "Mumbai", "Delhi", "Hyderabad", "Chennai", "Pune", "Kolkata",
   "Ahmedabad", "Jaipur", "Lucknow", "Chandigarh", "Indore", "Bhopal",
   "Patna", "Ranchi", "Guwahati", "Thiruvananthapuram", "Coimbatore", "Mysore", "Vizag",
@@ -112,7 +71,7 @@ function StateSelector({ value, onChange, label }: { value: string; onChange: (v
             exit={{ opacity: 0, y: -5 }}
             className="absolute top-full left-0 right-0 mt-2 py-2 bg-slate-800 border border-slate-700 rounded-xl shadow-xl z-20 max-h-60 overflow-y-auto"
           >
-            {INDIAN_STATES.map((state) => (
+            {INDIAN_CITIES.map((state) => (
               <button
                 key={state}
                 onClick={() => { onChange(state); setOpen(false); }}
@@ -167,35 +126,43 @@ function ComparisonBar({ valueA, valueB, maxValue, labelA, labelB, colorA, color
   );
 }
 
-export default function CompareStates({ initialStateA = "Bengaluru", initialStateB = "Mumbai" }: CompareStatesProps) {
+export default function CompareStates({ initialStateA = "Bengaluru", initialStateB = "Mumbai", year }: CompareStatesProps) {
   const [stateA, setStateA] = useState(initialStateA);
   const [stateB, setStateB] = useState(initialStateB);
   const [loading, setLoading] = useState(false);
-  const [comparison, setComparison] = useState<ComparisonData | null>(null);
-  const [summary, setSummary] = useState<ComparisonSummary | null>(null);
+  const [comparison, setComparison] = useState<StateComparisonData | null>(null);
+  const [summary, setSummary] = useState<ComparisonSummaryData | null>(null);
   const [activeTab, setActiveTab] = useState<TabType>("overview");
 
   useEffect(() => {
-    fetchComparison();
-  }, [stateA, stateB]);
-
-  const fetchComparison = async () => {
+    // Abort any in-flight request when the selection/year changes so a stale
+    // response never overwrites a newer one (or a closed component).
+    const controller = new AbortController();
+    let cancelled = false;
     setLoading(true);
-    try {
-      const response = await fetch(
-        `/api/v1/india/compare?state_a=${encodeURIComponent(stateA)}&state_b=${encodeURIComponent(stateB)}`
-      );
-      if (response.ok) {
-        const data = await response.json();
-        setComparison(data.comparison);
-        setSummary(data.summary);
-      }
-    } catch (error) {
-      console.error("Failed to fetch comparison:", error);
-    } finally {
-      setLoading(false);
-    }
-  };
+
+    api
+      .compareStates(stateA, stateB, year, controller.signal)
+      .then((data) => {
+        if (!cancelled) {
+          setComparison(data.comparison);
+          setSummary(data.summary);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled && error?.name !== 'AbortError') {
+          console.error("Failed to fetch comparison:", error);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [stateA, stateB, year]);
 
   const renderRadarChart = () => {
     if (!comparison) return null;
@@ -460,7 +427,10 @@ export default function CompareStates({ initialStateA = "Bengaluru", initialStat
                     <div className="space-y-2">
                       {comparison.top_organizations_a.slice(0, 8).map((org, i) => (
                         <div key={org} className="flex items-center gap-3 p-2 rounded-lg hover:bg-slate-700/50 transition-colors">
-                          <span className="text-lg">{i === 0 ? '??' : '???'}</span>
+                          <span className="flex items-center justify-center w-6 h-6 rounded-full bg-slate-700 text-slate-300 text-xs font-semibold">
+                            {i + 1}
+                          </span>
+                          <Building2 size={16} className="text-slate-500" />
                           <span className="text-slate-300">{org}</span>
                         </div>
                       ))}
@@ -471,7 +441,10 @@ export default function CompareStates({ initialStateA = "Bengaluru", initialStat
                     <div className="space-y-2">
                       {comparison.top_organizations_b.slice(0, 8).map((org, i) => (
                         <div key={org} className="flex items-center gap-3 p-2 rounded-lg hover:bg-slate-700/50 transition-colors">
-                          <span className="text-lg">{i === 0 ? '??' : '???'}</span>
+                          <span className="flex items-center justify-center w-6 h-6 rounded-full bg-slate-700 text-slate-300 text-xs font-semibold">
+                            {i + 1}
+                          </span>
+                          <Building2 size={16} className="text-slate-500" />
                           <span className="text-slate-300">{org}</span>
                         </div>
                       ))}

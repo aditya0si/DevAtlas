@@ -289,7 +289,7 @@ export const containerWidths = {
   full: '100%',
 };
 
-export default {
+const designSystem = {
   colors,
   typography,
   spacing,
@@ -301,3 +301,5 @@ export default {
   breakpoints,
   containerWidths,
 };
+
+export default designSystem;

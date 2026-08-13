@@ -23,6 +23,7 @@ from app.schemas.india import (
     SemanticSearchResult,
     StateDashboardResponse,
     TimeSeriesDataPoint,
+    TrendExplainRequest,
 )
 from app.services.insight_service import InsightService
 
@@ -32,10 +33,11 @@ router = APIRouter()
 @router.get("/stats", response_model=EcosystemStatsResponse)
 async def get_ecosystem_stats(
     db: AsyncSession = Depends(get_db),
+    year: Optional[int] = Query(default=None, ge=2008, le=2100, description="Historical year filter for Time Machine"),
 ) -> EcosystemStatsResponse:
     """Get comprehensive statistics about India's developer ecosystem."""
     service = InsightService(db)
-    stats = await service.get_ecosystem_stats()
+    stats = await service.get_ecosystem_stats(year=year)
     return EcosystemStatsResponse(**stats.model_dump())
 
 
@@ -64,10 +66,13 @@ async def get_ai_summary(
 @router.get("/overview", response_model=IndiaOverviewResponse)
 async def get_india_overview(
     db: AsyncSession = Depends(get_db),
+    year: Optional[int] = Query(default=None, ge=2008, le=2100, description="Historical year filter for Time Machine"),
 ) -> IndiaOverviewResponse:
     """Get India overview for the homepage."""
+    from app.models.github import Repository
+
     service = InsightService(db)
-    stats = await service.get_ecosystem_stats()
+    stats = await service.get_ecosystem_stats(year=year)
 
     # Determine top growing state
     top_growing_state = stats.top_states[0] if stats.top_states else {"state": "Unknown", "repositories": 0}
@@ -84,11 +89,13 @@ async def get_india_overview(
     # Largest community
     largest_community = stats.top_states[0] if stats.top_states else {"state": "Unknown", "repositories": 0}
 
-    # Repositories today
-    today = datetime.now(timezone.utc).date()
+    # Repositories today (robust UTC day bounds, no DB-specific timezone casts)
+    now = datetime.now(timezone.utc)
+    today_start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+    today_end = today_start + timedelta(days=1)
     repos_today_result = await db.execute(
-        select(func.count(text("id"))).where(
-            func.date(func.timezone("UTC", text("created_at"))) == today
+        select(func.count(Repository.id)).where(
+            Repository.created_at >= today_start, Repository.created_at < today_end
         )
     )
     repos_today = repos_today_result.scalar() or 0
@@ -115,29 +122,59 @@ async def get_india_overview(
 async def get_state_dashboard(
     state: str,
     db: AsyncSession = Depends(get_db),
+    year: Optional[int] = Query(default=None, ge=2008, le=2100, description="Historical year filter for Time Machine"),
 ) -> StateDashboardResponse:
-    """Get detailed dashboard for a specific Indian state."""
-    from app.models.github import Repository
+    """Get detailed dashboard for a specific Indian state/city.
 
-    # Get repository count for state
-    repo_count_result = await db.execute(
-        select(func.count(Repository.id)).where(Repository.owner_login.ilike(f"%{state}%"))
+    Repositories are attributed to the requested state/city via their linked
+    ``GitHubUser`` location (``github_users.state`` / ``github_users.city``),
+    and developer activity via enriched ``GitHubEvent`` state/city fields.
+    """
+    from sqlalchemy import or_
+    from app.models.github import GitHubEvent, GitHubUser, Repository
+
+    # Match either the state name or the city name (e.g. "Karnataka" or "Bengaluru").
+    state_filter = or_(
+        GitHubUser.state.ilike(f"%{state}%"),
+        GitHubUser.city.ilike(f"%{state}%"),
     )
+    repo_join = Repository.github_user_login == GitHubUser.login
+
+    # Get repository count for state (optionally within a historical year)
+    repo_count_query = (
+        select(func.count(Repository.id))
+        .join(GitHubUser, repo_join)
+        .where(state_filter)
+    )
+    if year is not None:
+        year_start = datetime(year, 1, 1, tzinfo=timezone.utc)
+        year_end = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+        repo_count_query = repo_count_query.where(
+            Repository.created_at >= year_start, Repository.created_at < year_end
+        )
+    repo_count_result = await db.execute(repo_count_query)
     repository_count = repo_count_result.scalar() or 0
 
-    # Get active developers (unique actors in last 30 days)
+    # Get active developers (unique actors in last 30 days) in this state/city
     thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
     active_devs_result = await db.execute(
-        select(func.count(func.distinct(text("actor_login"))))
-        .where(text("actor_login IS NOT NULL"))
-        .where(text(f"created_at >= '{thirty_days_ago.isoformat()}'"))
+        select(func.count(func.distinct(GitHubEvent.actor_login)))
+        .where(GitHubEvent.actor_login.isnot(None))
+        .where(GitHubEvent.created_at >= thirty_days_ago)
+        .where(
+            or_(
+                GitHubEvent.state.ilike(f"%{state}%"),
+                GitHubEvent.city.ilike(f"%{state}%"),
+            )
+        )
     )
     active_developers = active_devs_result.scalar() or 0
 
     # Get top languages
     lang_result = await db.execute(
         select(Repository.language, func.count(Repository.id).label("count"))
-        .where(Repository.owner_login.ilike(f"%{state}%"))
+        .join(GitHubUser, repo_join)
+        .where(state_filter)
         .where(Repository.language.isnot(None))
         .group_by(Repository.language)
         .order_by(func.count(Repository.id).desc())
@@ -151,7 +188,8 @@ async def get_state_dashboard(
     # Get trending projects (most stars recently)
     trending_result = await db.execute(
         select(Repository)
-        .where(Repository.owner_login.ilike(f"%{state}%"))
+        .join(GitHubUser, repo_join)
+        .where(state_filter)
         .order_by(Repository.stargazers_count.desc())
         .limit(10)
     )
@@ -168,7 +206,8 @@ async def get_state_dashboard(
     # Get top organizations
     org_result = await db.execute(
         select(Repository.owner_login, func.count(Repository.id).label("count"))
-        .where(Repository.owner_login.ilike(f"%{state}%"))
+        .join(GitHubUser, repo_join)
+        .where(state_filter)
         .group_by(Repository.owner_login)
         .order_by(func.count(Repository.id).desc())
         .limit(5)
@@ -182,14 +221,16 @@ async def get_state_dashboard(
 
     week_count_result = await db.execute(
         select(func.count(Repository.id))
-        .where(Repository.owner_login.ilike(f"%{state}%"))
+        .join(GitHubUser, repo_join)
+        .where(state_filter)
         .where(Repository.created_at >= week_ago)
     )
     week_repos = week_count_result.scalar() or 0
 
     month_count_result = await db.execute(
         select(func.count(Repository.id))
-        .where(Repository.owner_login.ilike(f"%{state}%"))
+        .join(GitHubUser, repo_join)
+        .where(state_filter)
         .where(Repository.created_at >= month_ago)
     )
     month_repos = month_count_result.scalar() or 0
@@ -197,9 +238,29 @@ async def get_state_dashboard(
     weekly_growth = round((week_repos / max(repository_count, 1)) * 100, 2)
     monthly_growth = round((month_repos / max(repository_count, 1)) * 100, 2)
 
-    # Generate activity graph (mock data for now - would need event data)
+    # Activity graph: real PushEvent/day aggregation for this state/city (last 30 days)
+    graph_start = now - timedelta(days=30)
+    graph_result = await db.execute(
+        select(
+            func.date(GitHubEvent.created_at).label("date"),
+            func.count(GitHubEvent.id).label("activity"),
+        )
+        .where(GitHubEvent.created_at >= graph_start)
+        .where(
+            or_(
+                GitHubEvent.state.ilike(f"%{state}%"),
+                GitHubEvent.city.ilike(f"%{state}%"),
+            )
+        )
+        .group_by(func.date(GitHubEvent.created_at))
+        .order_by(func.date(GitHubEvent.created_at))
+    )
+    activity_rows = {str(row.date): row.activity for row in graph_result.fetchall()}
     activity_graph = [
-        {"date": (now - timedelta(days=i)).strftime("%Y-%m-%d"), "activity": max(0, 50 - i * 3 + (hash(str(i)) % 20))}
+        {
+            "date": (now - timedelta(days=i)).strftime("%Y-%m-%d"),
+            "activity": activity_rows.get((now - timedelta(days=i)).strftime("%Y-%m-%d"), 0),
+        }
         for i in range(30, 0, -1)
     ]
 
@@ -244,11 +305,20 @@ async def get_seed_status(
         "embedded_repos": embedded_repos,
         "ready": total_repos >= 100 and embedded_repos >= 50,
     }
+
+
+@router.get("/analytics/graphs", response_model=AnalyticsGraphResponse)
 async def get_analytics_graphs(
     db: AsyncSession = Depends(get_db),
     time_range: str = Query(default="month", pattern="^(week|month|quarter|year)$"),
+    year: Optional[int] = Query(default=None, ge=2008, le=2100, description="Historical year filter for Time Machine"),
 ) -> AnalyticsGraphResponse:
-    """Get analytics graph data."""
+    """Get analytics graph data.
+
+    When ``year`` is provided, all repository-derived graphs are restricted to
+    repositories created during that calendar year so the frontend Time Machine
+    can query historical years.
+    """
     from app.models.github import Repository
 
     now = datetime.now(timezone.utc)
@@ -264,16 +334,42 @@ async def get_analytics_graphs(
 
     start_date = now - timedelta(days=days)
 
+    # Optional historical year filter. When a year is requested it defines the
+    # repository creation window (replacing the recent lookback, since a
+    # historical year cannot overlap a rolling time_range).
+    year_start = year_end = None
+    if year is not None:
+        year_start = datetime(year, 1, 1, tzinfo=timezone.utc)
+        year_end = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+
+    def apply_year_window(stmt):
+        """Restrict a repository query to the requested calendar year."""
+        if year is None:
+            return stmt
+        return stmt.where(
+            Repository.created_at >= year_start,
+            Repository.created_at < year_end,
+        )
+
+    # Repository creation window. A requested year replaces the rolling
+    # time_range lookback entirely (a historical year cannot overlap a recent
+    # rolling window), so the time series reflects that calendar year only.
+    created_start = year_start if year is not None else start_date
+    created_end = year_end
+
     # Get repositories over time
-    repos_over_time_result = await db.execute(
+    repos_over_time_stmt = (
         select(
             func.date(Repository.created_at).label("date"),
             func.count(Repository.id).label("count"),
         )
-        .where(Repository.created_at >= start_date)
+        .where(Repository.created_at >= created_start)
         .group_by(func.date(Repository.created_at))
         .order_by(func.date(Repository.created_at))
     )
+    if created_end is not None:
+        repos_over_time_stmt = repos_over_time_stmt.where(Repository.created_at < created_end)
+    repos_over_time_result = await db.execute(repos_over_time_stmt)
 
     repositories_over_time = [
         TimeSeriesDataPoint(date=str(row.date), value=row.count)
@@ -281,23 +377,26 @@ async def get_analytics_graphs(
     ]
 
     # Get language popularity
-    lang_result = await db.execute(
+    lang_stmt = apply_year_window(
         select(Repository.language, func.count(Repository.id).label("count"))
         .where(Repository.language.isnot(None))
         .group_by(Repository.language)
         .order_by(func.count(Repository.id).desc())
         .limit(15)
     )
+    lang_result = await db.execute(lang_stmt)
     language_popularity = [{"language": row.language, "count": row.count} for row in lang_result.fetchall()]
 
     # Get domain distribution
-    domain_result = await db.execute(
-        select(Repository.classification["domain"].astext, func.count(Repository.id).label("count"))
+    domain_expr = Repository.classification.op("->>")("domain").label("domain")
+    domain_stmt = apply_year_window(
+        select(domain_expr, func.count(Repository.id).label("count"))
         .where(Repository.classification.isnot(None))
-        .group_by(Repository.classification["domain"].astext)
+        .group_by(domain_expr)
         .order_by(func.count(Repository.id).desc())
         .limit(10)
     )
+    domain_result = await db.execute(domain_stmt)
     top_domains = [{"domain": row.domain or "unknown", "count": row.count} for row in domain_result.fetchall()]
 
     # Technology growth (language growth over time)
@@ -306,14 +405,19 @@ async def get_analytics_graphs(
     # Growth trend
     growth_trend = repositories_over_time[-30:] if len(repositories_over_time) > 30 else repositories_over_time
 
-    # State comparison
-    state_result = await db.execute(
-        select(Repository.owner_login, func.count(Repository.id).label("count"))
-        .group_by(Repository.owner_login)
+    # State comparison (real location data from linked GitHubUser)
+    from app.models.github import GitHubUser
+
+    state_stmt = apply_year_window(
+        select(GitHubUser.state, func.count(Repository.id).label("count"))
+        .join(GitHubUser, Repository.github_user_login == GitHubUser.login)
+        .where(GitHubUser.state.isnot(None), GitHubUser.state != "")
+        .group_by(GitHubUser.state)
         .order_by(func.count(Repository.id).desc())
         .limit(10)
     )
-    state_comparison = [{"state": row.owner_login, "repositories": row.count} for row in state_result.fetchall()]
+    state_result = await db.execute(state_stmt)
+    state_comparison = [{"state": row.state, "repositories": row.count} for row in state_result.fetchall()]
 
     return AnalyticsGraphResponse(
         repositories_over_time=repositories_over_time,
@@ -328,53 +432,95 @@ async def get_analytics_graphs(
 @router.get("/scores", response_model=list[EcosystemScoreResponse])
 async def get_ecosystem_scores(
     db: AsyncSession = Depends(get_db),
+    year: Optional[int] = Query(default=None, ge=2008, le=2100, description="Historical year filter for Time Machine"),
 ) -> list[EcosystemScoreResponse]:
-    """Get ecosystem scores for all Indian states."""
-    from app.models.github import Repository
+    """Get ecosystem scores for all Indian states.
 
-    # Get all states with their metrics
-    state_result = await db.execute(
-        select(Repository.owner_login, func.count(Repository.id).label("repo_count"))
-        .group_by(Repository.owner_login)
-        .order_by(func.count(Repository.id).desc())
-        .limit(20)
+    Scores are computed from real location data: repository counts are
+    attributed via the linked ``GitHubUser.state`` and developer/push activity
+    via enriched ``GitHubEvent`` state fields. When ``year`` is provided, all
+    repository/event metrics are restricted to that calendar year so the
+    frontend Time Machine can query historical years.
+    """
+    from app.models.github import GitHubEvent, GitHubUser, Repository
+
+    year_start, year_end = None, None
+    if year is not None:
+        year_start = datetime(year, 1, 1, tzinfo=timezone.utc)
+        year_end = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+
+    service = InsightService(db)
+    top_states = await service._get_top_states(year)
+
+    if not top_states:
+        return []
+
+    # Repository counts per state (real location data, optionally within a year)
+    repo_query = (
+        select(GitHubUser.state, func.count(Repository.id).label("repo_count"))
+        .join(Repository, Repository.github_user_login == GitHubUser.login)
+        .where(GitHubUser.state.isnot(None), GitHubUser.state != "")
     )
+    if year_start is not None:
+        repo_query = repo_query.where(
+            Repository.created_at >= year_start, Repository.created_at < year_end
+        )
+    repo_rows = await db.execute(repo_query.group_by(GitHubUser.state))
+    repo_by_state = {row.state: row.repo_count for row in repo_rows.fetchall()}
 
-    states_data = [
-        {"state": row.owner_login, "repositories": row.repo_count}
-        for row in state_result.fetchall()
-    ]
+    # Push/developer activity per state (enriched events, last 30 days or within a year)
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=30)
+    event_query = (
+        select(
+            GitHubEvent.state,
+            func.count(GitHubEvent.id).label("push_count"),
+            func.count(func.distinct(GitHubEvent.actor_login)).label("dev_count"),
+        )
+        .where(
+            GitHubEvent.event_type == "PushEvent",
+            GitHubEvent.state.isnot(None),
+            GitHubEvent.state != "",
+        )
+    )
+    if year_start is not None:
+        event_query = event_query.where(
+            GitHubEvent.created_at >= year_start, GitHubEvent.created_at < year_end
+        )
+    else:
+        event_query = event_query.where(GitHubEvent.created_at >= start)
+    event_rows = await db.execute(event_query.group_by(GitHubEvent.state))
+    event_by_state = {row.state: {"push": row.push_count, "dev": row.dev_count} for row in event_rows.fetchall()}
 
-    # Calculate scores for each state
+    max_repo = max(repo_by_state.values(), default=1)
+    max_push = max((v["push"] for v in event_by_state.values()), default=1)
+    max_dev = max((v["dev"] for v in event_by_state.values()), default=1)
+
     scores = []
-    max_repos = max((s["repositories"] for s in states_data), default=1)
+    for ts in top_states:
+        state = ts["state"]
+        repo_count = repo_by_state.get(state, 0)
+        push = event_by_state.get(state, {}).get("push", 0)
+        dev = event_by_state.get(state, {}).get("dev", 0)
 
-    indian_states = ["Bengaluru", "Mumbai", "Delhi", "Hyderabad", "Chennai", "Pune", "Kolkata", "Ahmedabad", "Jaipur", "Lucknow",
-                     "Chandigarh", "Indore", "Bhopal", "Patna", "Ranchi", "Guwahati", "Thiruvananthapuram", "Coimbatore", "Mysore", "Vizag"]
-
-    for i, state_data in enumerate(states_data):
-        state_name = indian_states[i] if i < len(indian_states) else state_data["state"]
-        repo_count = state_data["repositories"]
-
-        # Calculate component scores (simplified algorithm)
-        developer_activity = min(100, (repo_count / max_repos) * 100)
-        innovation = min(100, 50 + (repo_count / max_repos) * 50)  # Innovation linked to repo count
-        open_source = min(100, 60 + (repo_count / max_repos) * 40)
-        ai_score = min(100, 40 + (repo_count / max_repos) * 60)  # AI focus
-        cybersecurity_score = min(100, 30 + (repo_count / max_repos) * 70)
-        growth_score = min(100, 70 + (hash(state_name) % 30))
+        developer_activity = min(100, (push / max_push * 100) if max_push else 0)
+        innovation = min(100, (repo_count / max_repo * 100) if max_repo else 0)
+        open_source = min(100, (dev / max_dev * 100) if max_dev else 0)
+        ai_score = min(100, 40 + (repo_count / max_repo * 60) if max_repo else 0)
+        cybersecurity_score = min(100, 30 + (repo_count / max_repo * 70) if max_repo else 0)
+        growth_score = min(100, (push / max_push * 100) if max_push else 0)
 
         overall = (
-            developer_activity * 0.25 +
-            innovation * 0.15 +
-            open_source * 0.15 +
-            ai_score * 0.20 +
-            cybersecurity_score * 0.10 +
-            growth_score * 0.15
+            developer_activity * 0.25
+            + innovation * 0.15
+            + open_source * 0.15
+            + ai_score * 0.20
+            + cybersecurity_score * 0.10
+            + growth_score * 0.15
         )
 
         scores.append(EcosystemScoreResponse(
-            state=state_name,
+            state=state,
             developer_activity_score=round(developer_activity, 2),
             innovation_score=round(innovation, 2),
             open_source_score=round(open_source, 2),
@@ -382,10 +528,13 @@ async def get_ecosystem_scores(
             cybersecurity_score=round(cybersecurity_score, 2),
             growth_score=round(growth_score, 2),
             overall_score=round(overall, 2),
-            rank=i + 1,
+            rank=0,
         ))
 
-    return sorted(scores, key=lambda x: x.overall_score, reverse=True)
+    scores.sort(key=lambda x: x.overall_score, reverse=True)
+    for i, s in enumerate(scores):
+        s.rank = i + 1
+    return scores
 
 
 @router.get("/discovery", response_model=DiscoveryResponse)
@@ -423,14 +572,18 @@ async def get_discovery(
     )
     trending_technologies = [{"language": row.language, "count": row.count} for row in lang_result.fetchall()]
 
-    # Get trending states
+    # Get trending states (real location data from linked GitHubUser)
+    from app.models.github import GitHubUser
+
     state_result = await db.execute(
-        select(Repository.owner_login, func.count(Repository.id).label("count"))
-        .group_by(Repository.owner_login)
+        select(GitHubUser.state, func.count(Repository.id).label("count"))
+        .join(GitHubUser, Repository.github_user_login == GitHubUser.login)
+        .where(GitHubUser.state.isnot(None), GitHubUser.state != "")
+        .group_by(GitHubUser.state)
         .order_by(func.count(Repository.id).desc())
         .limit(10)
     )
-    trending_states = [{"state": row.owner_login, "repositories": row.count} for row in state_result.fetchall()]
+    trending_states = [{"state": row.state, "repositories": row.count} for row in state_result.fetchall()]
 
     # Get top organizations
     org_result = await db.execute(
@@ -445,7 +598,7 @@ async def get_discovery(
     ai_result = await db.execute(
         select(Repository)
         .where(Repository.classification.isnot(None))
-        .where(Repository.classification["domain"].astext.ilike("%ai%"))
+        .where(Repository.classification.op("->>")("domain").ilike("%ai%"))
         .order_by(Repository.created_at.desc())
         .limit(10)
     )
@@ -461,10 +614,11 @@ async def get_discovery(
     ]
 
     # Get fastest growing domains
+    domain_expr = Repository.classification.op("->>")("domain").label("domain")
     domain_result = await db.execute(
-        select(Repository.classification["domain"].astext, func.count(Repository.id).label("count"))
+        select(domain_expr, func.count(Repository.id).label("count"))
         .where(Repository.classification.isnot(None))
-        .group_by(Repository.classification["domain"].astext)
+        .group_by(domain_expr)
         .order_by(func.count(Repository.id).desc())
         .limit(5)
     )
@@ -489,17 +643,13 @@ async def semantic_search(
     from app.models.github import Repository
     from app.services.embedding_service import EmbeddingService
 
-    # Generate embedding for query
+    # Generate query embedding through the AI provider fallback chain
+    # (OpenAI -> Gemini -> Ollama -> deterministic local fallback), so the
+    # endpoint does not 500 solely because OPENAI_API_KEY is absent.
     embedding_service = EmbeddingService(db)
 
     try:
-        # Get query embedding
-        response = await embedding_service.client.embeddings.create(
-            model=embedding_service.model,
-            input=[request.query],
-            dimensions=embedding_service.dimensions,
-        )
-        query_embedding = response.data[0].embedding
+        query_embedding = await embedding_service.generate_embedding(request.query)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate embedding: {str(e)}")
 
@@ -513,7 +663,7 @@ async def semantic_search(
             .where(Repository.embedding.isnot(None))
         )
         if request.domain:
-            stmt = stmt.where(Repository.classification["domain"].astext.ilike(f"%{request.domain}%"))
+            stmt = stmt.where(Repository.classification.op("->>")("domain").ilike(f"%{request.domain}%"))
         stmt = stmt.order_by(Repository.embedding.cosine_distance(query_embedding)).limit(request.limit)
         
         db_res = await db.execute(stmt)
@@ -536,7 +686,7 @@ async def semantic_search(
         # Fallback to in-memory cosine calculation for non-PostgreSQL/SQLite test environments
         query = select(Repository).where(Repository.embedding.isnot(None))
         if request.domain:
-            query = query.where(Repository.classification["domain"].astext.ilike(f"%{request.domain}%"))
+            query = query.where(Repository.classification.op("->>")("domain").ilike(f"%{request.domain}%"))
 
         result = await db.execute(query.limit(500))
         repositories = result.scalars().all()
@@ -585,6 +735,14 @@ async def get_repository_card(
 ) -> dict:
     """Get AI-generated repository card with summary."""
     from app.models.github import Repository
+
+    import uuid as _uuid
+
+    # Repository.id is a UUID column; reject malformed ids before querying.
+    try:
+        _uuid.UUID(repository_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Repository not found")
 
     result = await db.execute(select(Repository).where(Repository.id == repository_id))
     repo = result.scalar_one_or_none()
@@ -649,12 +807,12 @@ def _calculate_growth_trend(repo: Repository) -> str:
 
 @router.post("/trends/explain", response_model=dict)
 async def explain_trend(
-    request: dict,
+    request: TrendExplainRequest,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Explain a trend using AI.
 
-    Request body:
+    The request body is validated against the ``TrendExplainRequest`` schema:
     - entity_type: national, state, city, technology, organization, repository
     - entity_name: Name of the entity
     - metric_name: The metric being explained
@@ -665,21 +823,20 @@ async def explain_trend(
     """
     from app.services.trend_explanation_service import TrendExplanationService, EntityType
 
-    entity_type_str = request.get("entity_type", "state")
     try:
-        entity_type = EntityType(entity_type_str)
+        entity_type = EntityType(request.entity_type)
     except ValueError:
         entity_type = EntityType.STATE
 
     service = TrendExplanationService(db)
     explanation = await service.explain_trend(
         entity_type=entity_type,
-        entity_name=request.get("entity_name", ""),
-        metric_name=request.get("metric_name", "repository_count"),
-        current_value=request.get("current_value", 0),
-        previous_value=request.get("previous_value", 0),
-        time_range=request.get("time_range", "month"),
-        domain=request.get("domain"),
+        entity_name=request.entity_name,
+        metric_name=request.metric_name,
+        current_value=request.current_value,
+        previous_value=request.previous_value,
+        time_range=request.time_range,
+        domain=request.domain,
     )
 
     return explanation.model_dump()
@@ -691,10 +848,12 @@ async def compare_states(
     state_a: str = Query(..., description="First state to compare"),
     state_b: str = Query(..., description="Second state to compare"),
     domain: Optional[str] = Query(default=None, description="Optional domain filter"),
+    year: Optional[int] = Query(default=None, ge=2008, le=2100, description="Historical year filter for Time Machine"),
 ) -> dict:
     """Compare two Indian states comprehensively.
 
-    Returns comparison data, AI summary, and insights.
+    Returns comparison data, AI summary, and insights. When ``year`` is
+    provided all repository/event metrics are restricted to that calendar year.
     """
     from app.services.trend_explanation_service import TrendExplanationService
 
@@ -703,6 +862,7 @@ async def compare_states(
         state_a=state_a,
         state_b=state_b,
         domain=domain,
+        year=year,
     )
 
     return {
@@ -718,6 +878,7 @@ async def get_comparison_insights(
     state_a: str = Query(..., description="First state"),
     state_b: str = Query(..., description="Second state"),
     domain: Optional[str] = Query(default=None),
+    year: Optional[int] = Query(default=None, ge=2008, le=2100, description="Historical year filter for Time Machine"),
 ) -> list[dict]:
     """Get specific comparison insights between two states."""
     from app.services.trend_explanation_service import TrendExplanationService
@@ -727,6 +888,7 @@ async def get_comparison_insights(
         state_a=state_a,
         state_b=state_b,
         domain=domain,
+        year=year,
     )
 
     return [i.model_dump() for i in insights]

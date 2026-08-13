@@ -14,39 +14,15 @@ import {
   Info
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { api, AnalyticsGraphData, TrendExplanationData } from '@/lib/api';
 
 interface TimeSeriesDataPoint {
   date: string;
   value: number;
 }
 
-interface TrendExplanation {
-  summary: string;
-  key_drivers: Array<{
-    factor: string;
-    impact: string;
-    description: string;
-    evidence: string[];
-  }>;
-  unusual_observations: Array<{
-    observation: string;
-    significance: string;
-    deviation: string;
-  }>;
-  notable_changes: string[];
-  confidence_score: number;
-  entity_type: string;
-  entity_name: string;
-  time_range: string;
-}
-
-interface AnalyticsGraphs {
-  repositories_over_time: TimeSeriesDataPoint[];
-  technology_growth: { language: string; count: number }[];
-  language_popularity: { language: string; count: number }[];
-  top_domains: { domain: string; count: number }[];
-  growth_trend: TimeSeriesDataPoint[];
-  state_comparison: { state: string; repositories: number }[];
+interface AnalyticsGraphsProps {
+  year?: number;
 }
 
 type TimeRange = 'week' | 'month' | 'quarter' | 'year';
@@ -135,32 +111,42 @@ function LanguageBar({ lang, index, maxCount }: {
   );
 }
 
-export default function AnalyticsGraphs() {
-  const [graphs, setGraphs] = useState<AnalyticsGraphs | null>(null);
+export default function AnalyticsGraphs({ year }: AnalyticsGraphsProps) {
+  const [graphs, setGraphs] = useState<AnalyticsGraphData | null>(null);
   const [loading, setLoading] = useState(true);
   const [timeRange, setTimeRange] = useState<TimeRange>('month');
   const [activeGraph, setActiveGraph] = useState<GraphType>('repos');
   const [showExplanation, setShowExplanation] = useState(false);
-  const [explanation, setExplanation] = useState<TrendExplanation | null>(null);
+  const [explanation, setExplanation] = useState<TrendExplanationData | null>(null);
   const [explaining, setExplaining] = useState(false);
 
   useEffect(() => {
-    const fetchGraphs = async () => {
-      setLoading(true);
-      try {
-        const response = await fetch(`/api/v1/india/analytics/graphs?time_range=${timeRange}`);
-        if (!response.ok) throw new Error('Failed to fetch graphs');
-        const data = await response.json();
-        setGraphs(data);
-      } catch (error) {
-        console.error('Failed to fetch analytics graphs', error);
-      } finally {
-        setLoading(false);
-      }
-    };
+    // Abort in-flight requests when the range/year changes so stale responses
+    // never overwrite newer data (or update a closed component).
+    const controller = new AbortController();
+    let cancelled = false;
+    setLoading(true);
 
-    fetchGraphs();
-  }, [timeRange]);
+    api
+      .getAnalyticsGraphs(timeRange, year, controller.signal)
+      .then((data) => {
+        if (!cancelled) setGraphs(data);
+      })
+      .catch((error) => {
+        if (!cancelled && error?.name !== 'AbortError') {
+          console.error('Failed to fetch analytics graphs', error);
+          setGraphs(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [timeRange, year]);
 
   const handleExplain = async () => {
     if (!graphs) return;
@@ -169,37 +155,22 @@ export default function AnalyticsGraphs() {
     setShowExplanation(true);
 
     try {
-      const currentValue = graphs.repositories_over_time.reduce((sum, p) => sum + p.value, 0);
-      const previousValue = currentValue * 0.85;
+      // Derive the previous-period value from the real time series (split the
+      // data in half) instead of inventing a synthetic "previous value".
+      const values = graphs.repositories_over_time.map((p) => p.value);
+      const midpoint = Math.max(1, Math.floor(values.length / 2));
+      const currentValue = values.slice(midpoint).reduce((sum, v) => sum + v, 0);
+      const previousValue = values.slice(0, midpoint).reduce((sum, v) => sum + v, 0);
 
-      const response = await fetch('/api/v1/india/trends/explain', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          entity_type: 'national',
-          entity_name: 'India',
-          metric_name: 'repository_count',
-          current_value: currentValue,
-          previous_value: previousValue,
-          time_range: timeRange,
-        }),
+      const data = await api.explainTrends({
+        entity_type: 'national',
+        entity_name: 'India',
+        metric_name: 'repository_count',
+        current_value: currentValue,
+        previous_value: previousValue,
+        time_range: timeRange,
       });
-
-      if (response.ok) {
-        const data = await response.json();
-        setExplanation(data);
-      } else {
-        setExplanation({
-          summary: 'Unable to generate explanation. Please try again.',
-          key_drivers: [],
-          unusual_observations: [],
-          notable_changes: [],
-          confidence_score: 0,
-          entity_type: 'national',
-          entity_name: 'India',
-          time_range: timeRange,
-        });
-      }
+      setExplanation(data);
     } catch (error) {
       console.error('Failed to get explanation:', error);
     } finally {
@@ -358,8 +329,8 @@ export default function AnalyticsGraphs() {
                     transition={{ delay: i * 0.05 }}
                     className="bg-slate-900/50 rounded-xl p-4 border border-slate-700/50 text-center hover:border-indigo-500/50 hover:bg-slate-900 transition-all cursor-pointer group"
                   >
-                    <p className="text-2xl mb-2">
-                      {i === 0 ? '??' : i === 1 ? '??' : i === 2 ? '??' : '??'}
+                    <p className="w-8 h-8 mx-auto mb-2 rounded-lg bg-indigo-500/20 text-indigo-300 text-sm font-semibold flex items-center justify-center">
+                      {i + 1}
                     </p>
                     <p className="text-slate-200 font-medium capitalize group-hover:text-indigo-300 transition-colors">{domain.domain}</p>
                     <p className="text-2xl font-bold text-indigo-400 mt-1">{domain.count}</p>
@@ -536,7 +507,7 @@ export default function AnalyticsGraphs() {
                         <div className="space-y-2">
                           {explanation.unusual_observations.map((obs, i) => (
                             <div key={i} className="bg-amber-900/20 rounded-lg p-3 border border-amber-500/30">
-                              <p className="amber-200 text-sm font-medium">{obs.observation}</p>
+                              <p className="text-amber-200 text-sm font-medium">{obs.observation}</p>
                               <p className="text-xs text-amber-300/70 mt-1">{obs.significance}</p>
                             </div>
                           ))}

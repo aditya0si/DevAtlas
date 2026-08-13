@@ -3,6 +3,11 @@ import { test, expect } from '@playwright/test';
 test.describe('DevAtlas V1 End-to-End Validation', () => {
   
   test('Initial Load & Cinematic Sequence', async ({ page }) => {
+    // Track the real stats response so assertions verify API-backed UI content.
+    const statsPromise = page.waitForResponse(response =>
+      response.url().includes('/api/v1/india/stats') && response.status() === 200
+    );
+
     // 1. Launch Application
     await page.goto('/');
 
@@ -24,14 +29,25 @@ test.describe('DevAtlas V1 End-to-End Validation', () => {
     const searchInput = page.locator('input[placeholder*="Ask DevAtlas"]');
     await expect(searchInput).toBeVisible();
 
-    // Ensure the living statistics are visible
+    // Ensure the living statistics (bottom dock) are visible
     await expect(page.getByText('Repositories', { exact: true })).toBeVisible();
     await expect(page.getByText('Developers', { exact: true })).toBeVisible();
     await expect(page.getByText('Stars', { exact: true })).toBeVisible();
-    await expect(page.getByText('Commits', { exact: true })).toBeVisible();
-    
-    // Ensure ticker is visible
-    await expect(page.getByText('Hyderabad AI Repos +12% this week').first()).toBeVisible();
+    await expect(page.getByText('Events', { exact: true })).toBeVisible();
+
+    // The live ticker must be derived from the real /india/stats response —
+    // it must NOT show hardcoded synthetic text.
+    const stats = await (await statsPromise).json();
+    const ticker = page.getByTestId('live-ticker');
+    await expect(ticker).toBeVisible();
+    const topState = stats.top_states?.[0]?.state;
+    if (topState) {
+      // The ticker reflects the top state returned by the API.
+      await expect(ticker).toContainText(topState);
+    } else {
+      // Truthful empty state when the backend has no repository data yet.
+      await expect(ticker).toContainText('Live ecosystem data will appear');
+    }
   });
 
   test('Ask DevAtlas Search Interaction', async ({ page }) => {
@@ -44,16 +60,14 @@ test.describe('DevAtlas V1 End-to-End Validation', () => {
     await searchInput.fill('Why is Karnataka growing?');
     await searchInput.press('Enter');
 
-    // Wait for AI Insight panel to appear
-    const aiPanel = page.locator('h3', { hasText: 'DevAtlas AI' });
-    await expect(aiPanel).toBeVisible({ timeout: 5000 });
+    // Wait for AI Copilot panel to appear
+    await expect(page.getByText('DevAtlas AI Copilot')).toBeVisible({ timeout: 5000 });
 
     // Capture AI search screenshot
     await page.screenshot({ path: 'screenshots/ai-search-insight.png', fullPage: true });
 
-    // Assert content
-    await expect(page.getByText('98% CONFIDENCE')).toBeVisible();
-    await expect(page.getByText(/Karnataka's growth is driven/)).toBeVisible();
+    // The query is echoed back in the panel heading
+    await expect(page.getByText('Why is Karnataka growing?')).toBeVisible();
   });
 
   test('Timeline Interaction', async ({ page }) => {
@@ -66,9 +80,9 @@ test.describe('DevAtlas V1 End-to-End Validation', () => {
 
     // Interact with slider (change value to 2024)
     await slider.fill('2024');
-    
-    const yearIndicator = page.locator('span', { hasText: '2024' }).last();
-    await expect(yearIndicator).toBeVisible();
+
+    // The Time Machine year badge reflects the new value
+    await expect(page.getByText('2024', { exact: true })).toBeVisible();
 
     await page.screenshot({ path: 'screenshots/timeline-2024.png', fullPage: true });
   });

@@ -54,6 +54,7 @@ const Avatar = forwardRef<HTMLDivElement, AvatarProps>(({
         )}
       >
         {src && !imageError ? (
+          // eslint-disable-next-line @next/next/no-img-element
           <img
             src={src}
             alt={alt}

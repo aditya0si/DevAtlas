@@ -1,8 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
+import { api } from "@/lib/api";
+import {
+  getDomainColor,
+  getFeatureCategory,
+  getFeatureDomain,
+} from "@/lib/domain";
 
 type GeoJSONFeature = {
   type: "Feature";
@@ -16,69 +22,114 @@ type GeoJSONFeature = {
   };
 };
 
-type GeoJSONFeatureCollection = {
-  type: "FeatureCollection";
-  features: GeoJSONFeature[];
-};
-
-// Helper to assign a mock category to a repository for visualization
-const getCategoryForFeature = (feature: GeoJSONFeature) => {
-  const classification = feature.properties.classification;
-  if (classification && classification.domain) {
-    return classification.domain; // Or map it to 'AI', etc.
-  }
-  
-  const hash = feature.properties.id.split('').reduce((a, b) => {
-    a = (a << 5) - a + b.charCodeAt(0);
-    return a & a;
-  }, 0);
-  
-  const categories = ["AI", "Cybersecurity", "Healthcare", "Robotics", "Web3"];
-  return categories[Math.abs(hash) % categories.length];
-};
+export interface StoryStep {
+  center: [number, number];
+  zoom: number;
+  title: string;
+  pitch?: number;
+  bearing?: number;
+}
 
 export interface DeveloperMapRef {
   flyTo: (center: [number, number], zoom: number, pitch?: number, bearing?: number) => void;
   resetView: () => void;
-  playStory: (steps: { center: [number, number], zoom: number, title: string, pitch?: number, bearing?: number }[], onStep: (title: string) => void) => void;
+  playStory: (steps: StoryStep[], onStep: (title: string) => void) => void;
+  pauseStory: () => void;
+  resumeStory: () => void;
+  skipStory: () => void;
+  stopStory: () => void;
 }
 
 interface DeveloperMapProps {
   activeFilter?: string;
+  year?: number;
   onMapLoad?: () => void;
   onReady?: (actions: DeveloperMapRef) => void;
+  onRepositoryClick?: (repoId: string) => void;
 }
 
-const DeveloperMap = ({ activeFilter = "All Projects", onMapLoad, onReady }: DeveloperMapProps) => {
+const DeveloperMap = ({
+  activeFilter = "All Projects",
+  year,
+  onMapLoad,
+  onReady,
+  onRepositoryClick,
+}: DeveloperMapProps) => {
   const [features, setFeatures] = useState<GeoJSONFeature[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // Load geospatial activity from the API. Reload whenever the selected
+  // domain filter or Time Machine year changes. An AbortController cancels
+  // any in-flight request when the filter/year changes or the map unmounts;
+  // the `cancelled` flag guards against stale responses applying state.
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
     setLoading(true);
-    fetch("/api/v1/geospatial/activity?bbox=-180,-90,180,90&limit=5000")
-      .then((response) => {
-        if (!response.ok) throw new Error("Failed to load activity data");
-        return response.json();
+
+    api
+      .getGeospatialActivity("68.1866,6.5546,97.4026,35.6745", {
+        domain: activeFilter,
+        year,
+        limit: 5000,
+        signal: controller.signal,
       })
-      .then((data: GeoJSONFeatureCollection) => {
+      .then((data) => {
         if (!cancelled) {
-          setFeatures(data.features || []);
+          setFeatures((data.features || []) as GeoJSONFeature[]);
           setLoading(false);
         }
       })
       .catch((fetchError) => {
         if (!cancelled) {
           console.error("Map fetch error:", fetchError);
+          setFeatures([]);
           setLoading(false);
         }
       });
     return () => {
       cancelled = true;
+      controller.abort();
     };
-  }, []);
+  }, [activeFilter, year]);
 
   const [map, setMap] = useState<maplibregl.Map | null>(null);
+
+  // Story Mode playback state, kept in a ref so the imperative controls
+  // (pause/resume/skip/stop) can mutate it without triggering re-renders.
+  const storyState = useRef({
+    running: false,
+    paused: false,
+    cancelled: false,
+    skip: false,
+    steps: [] as StoryStep[],
+    index: 0,
+    onStep: null as ((title: string) => void) | null,
+    resumeResolve: null as (() => void) | null,
+  });
+
+  // Wait for the per-step dwell time, honouring pause/resume/skip/cancel.
+  const waitForStep = async (state: typeof storyState.current) => {
+    const dwellMs = 8000;
+    const tickMs = 100;
+    let elapsed = 0;
+    while (elapsed < dwellMs) {
+      if (state.cancelled) return;
+      if (state.skip) {
+        state.skip = false;
+        return;
+      }
+      if (state.paused) {
+        await new Promise<void>((resolve) => {
+          state.resumeResolve = resolve;
+        });
+        state.resumeResolve = null;
+        continue;
+      }
+      await new Promise((resolve) => setTimeout(resolve, tickMs));
+      elapsed += tickMs;
+    }
+  };
 
   useEffect(() => {
     const instance = new maplibregl.Map({
@@ -92,7 +143,16 @@ const DeveloperMap = ({ activeFilter = "All Projects", onMapLoad, onReady }: Dev
     });
     setMap(instance);
 
+    // Expose the map instance for E2E testing (repo-detail drill-down clicks).
+    // Read-only debug hook; does not affect the rendered UI.
+    if (typeof window !== "undefined") {
+      (window as unknown as Record<string, unknown>).__devatlasMap = instance;
+    }
+
     return () => {
+      if (typeof window !== "undefined") {
+        delete (window as unknown as Record<string, unknown>).__devatlasMap;
+      }
       instance.remove();
     };
   }, []);
@@ -111,64 +171,135 @@ const DeveloperMap = ({ activeFilter = "All Projects", onMapLoad, onReady }: Dev
           }
         },
         playStory: async (steps, onStep) => {
-          console.log("playStory called, map is:", map ? "exists" : "null");
-          if (!map) {
-            console.error("playStory failed: map is null!");
-            return;
-          }
-          for (const step of steps) {
-            console.log("playStory step:", step.title);
+          const state = storyState.current;
+          // Cancel any in-flight story before starting a new one.
+          state.cancelled = true;
+          state.resumeResolve?.();
+          state.resumeResolve = null;
+          if (map) map.stop();
+
+          state.cancelled = false;
+          state.paused = false;
+          state.skip = false;
+          state.running = true;
+          state.steps = steps;
+          state.index = 0;
+          state.onStep = onStep;
+
+          for (let i = 0; i < steps.length; i++) {
+            if (state.cancelled) break;
+            state.index = i;
+            const step = steps[i];
             onStep(step.title);
-            map.flyTo({
+            map?.flyTo({
               center: step.center,
               zoom: step.zoom,
               pitch: step.pitch || 60,
               bearing: step.bearing || (Math.random() * 40 - 20),
               duration: 6000,
-              essential: true
+              essential: true,
             });
-            // Wait for 8 seconds per step (fly + pause)
-            await new Promise(resolve => setTimeout(resolve, 8000));
+            // Wait for the fly + dwell, honouring pause/resume/skip/cancel.
+            await waitForStep(state);
           }
-          onStep("End");
-        }
+          if (!state.cancelled) {
+            onStep("End");
+          }
+          state.running = false;
+        },
+        pauseStory: () => {
+          const state = storyState.current;
+          if (state.running && !state.paused) {
+            state.paused = true;
+          }
+        },
+        resumeStory: () => {
+          const state = storyState.current;
+          if (state.running && state.paused) {
+            state.paused = false;
+            state.resumeResolve?.();
+            state.resumeResolve = null;
+          }
+        },
+        skipStory: () => {
+          const state = storyState.current;
+          if (!state.running) return;
+          state.skip = true;
+          // If paused, unblock the wait so the skip can take effect.
+          state.resumeResolve?.();
+          state.resumeResolve = null;
+          if (map) map.stop();
+        },
+        stopStory: () => {
+          const state = storyState.current;
+          state.cancelled = true;
+          state.paused = false;
+          state.resumeResolve?.();
+          state.resumeResolve = null;
+          if (map) map.stop();
+          state.onStep?.("End");
+          state.running = false;
+        },
       });
     }
   }, [map, onReady]);
 
+  // Wire point clicks -> repository detail drill-down.
   useEffect(() => {
-    if (!map || loading) return;
-    const sourceId = "repositories";
-    
-    // Filter repositories based on the activeFilter (if not "All Projects")
-    const filteredFeatures = features.filter(feature => {
-      if (activeFilter === "All Projects") return true;
-      const category = getCategoryForFeature(feature);
-      // Rough matching
-      return category.toLowerCase().includes(activeFilter.toLowerCase()) || activeFilter.toLowerCase().includes(category.toLowerCase());
-    });
+    if (!map) return;
 
-    const displayFeatures = filteredFeatures.map((feature) => {
-      const category = getCategoryForFeature(feature);
-      
-      let color = "#38bdf8"; 
-      const lowerCat = category.toLowerCase();
-      if (lowerCat.includes("ai") || lowerCat.includes("machine learning")) color = "#8B5CF6"; 
-      else if (lowerCat.includes("cyber") || lowerCat.includes("security")) color = "#4F8BFF"; 
-      else if (lowerCat.includes("health") || lowerCat.includes("medical")) color = "#10B981"; 
-      else if (lowerCat.includes("robotics") || lowerCat.includes("hardware")) color = "#FFB547"; 
-      else if (lowerCat.includes("web3") || lowerCat.includes("blockchain")) color = "#EC4899"; 
+    const handlePointClick = (e: maplibregl.MapLayerMouseEvent) => {
+      const clicked = e.features;
+      if (!clicked || clicked.length === 0) return;
+      const repoId = clicked[0]?.properties?.id;
+      if (repoId && onRepositoryClick) {
+        onRepositoryClick(repoId);
+      }
+    };
+    const handleEnter = () => {
+      map.getCanvas().style.cursor = "pointer";
+    };
+    const handleLeave = () => {
+      map.getCanvas().style.cursor = "";
+    };
+
+    map.on("click", "repositories-circle", handlePointClick);
+    map.on("click", "repositories-glow", handlePointClick);
+    map.on("mouseenter", "repositories-circle", handleEnter);
+    map.on("mouseleave", "repositories-circle", handleLeave);
+
+    return () => {
+      map.off("click", "repositories-circle", handlePointClick);
+      map.off("click", "repositories-glow", handlePointClick);
+      map.off("mouseenter", "repositories-circle", handleEnter);
+      map.off("mouseleave", "repositories-circle", handleLeave);
+    };
+  }, [map, onRepositoryClick]);
+
+  const displayFeatures = useMemo(() => {
+    return features.map((feature) => {
+      // Use the real classified domain for category + color. Uncategorized
+      // repositories get the neutral category/color — never a fake domain.
+      const domain = getFeatureDomain(feature.properties.classification);
+      const category = getFeatureCategory(feature.properties.classification);
+      const color = getDomainColor(feature.properties.classification);
 
       return {
         type: "Feature" as const,
         geometry: feature.geometry,
-        properties: { 
+        properties: {
           ...feature.properties,
+          domain,
           category,
-          color
+          color,
         },
       };
     });
+  }, [features]);
+
+  useEffect(() => {
+    if (!map || loading) return;
+    const sourceId = "repositories";
 
     if (map.getSource(sourceId)) {
       (map.getSource(sourceId) as maplibregl.GeoJSONSource).setData({
@@ -254,7 +385,7 @@ const DeveloperMap = ({ activeFilter = "All Projects", onMapLoad, onReady }: Dev
         map.off("load", addLayers);
       };
     }
-  }, [map, features, loading, activeFilter, onMapLoad]);
+  }, [map, displayFeatures, loading, onMapLoad]);
 
   return (
     <div className="w-full h-full bg-[#050816]">

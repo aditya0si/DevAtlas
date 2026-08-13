@@ -45,7 +45,7 @@ async def enqueue_incremental_sync() -> dict[str, str]:
     This syncs only recent events and stale users.
     """
     redis = await get_arq_redis()
-    job = await redis.enqueue_job("run_incremental_sync")
+    job = await redis.enqueue_job("run_incremental_repo_sync")
 
     if job is None:
         raise HTTPException(status_code=500, detail="Failed to enqueue job")
@@ -75,7 +75,7 @@ async def enqueue_user_enrichment() -> dict[str, str]:
 async def enqueue_ai_classification() -> dict[str, str]:
     """Enqueue AI classification + embedding worker."""
     redis = await get_arq_redis()
-    job = await redis.enqueue_job("run_ai_classification")
+    job = await redis.enqueue_job("run_classification_worker")
 
     if job is None:
         raise HTTPException(status_code=500, detail="Failed to enqueue job")
@@ -118,7 +118,7 @@ async def enqueue_full_pipeline() -> dict[str, Any]:
         "run_push_event_ingestion",
         "run_user_enrichment",
         "run_event_enrichment",
-        "run_ai_classification",
+        "run_classification_worker",
         "run_aggregation",
         "run_activity_score",
         "run_ecosystem_score",

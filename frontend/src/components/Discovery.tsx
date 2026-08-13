@@ -14,28 +14,7 @@ import {
   Star
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-
-interface DiscoveryData {
-  trending_repositories: {
-    id: string;
-    name: string;
-    full_name: string;
-    stars: number;
-    language: string;
-    description: string;
-  }[];
-  trending_technologies: { language: string; count: number }[];
-  trending_states: { state: string; repositories: number }[];
-  trending_organizations: { login: string; repositories: number }[];
-  newest_ai_projects: {
-    id: string;
-    name: string;
-    full_name: string;
-    language: string;
-    created_at: string;
-  }[];
-  fastest_growing_domains: { domain: string; count: number }[];
-}
+import { api, DiscoveryData } from '@/lib/api';
 
 type TabType = 'repositories' | 'technologies' | 'states' | 'organizations' | 'ai' | 'domains';
 
@@ -198,7 +177,7 @@ function AICard({ project, index }: { project: DiscoveryData['newest_ai_projects
           {project.language || 'AI'}
         </span>
         <span className="text-xs text-slate-500">
-          {new Date(project.created_at).toLocaleDateString()}
+          {project.created_at ? new Date(project.created_at).toLocaleDateString() : 'Recently added'}
         </span>
       </div>
     </motion.a>
@@ -219,8 +198,8 @@ function DomainCard({ domain, index }: { domain: { domain: string; count: number
         <span className="text-2xl">??</span>
         <div className="flex-1">
           <h4 className="text-slate-200 font-semibold capitalize">{domain.domain}</h4>
-          <p className="text-xl font-bold text-indigo-400">+{domain.count}</p>
-          <p className="text-xs text-slate-500">new this month</p>
+          <p className="text-xl font-bold text-indigo-400">{domain.count.toLocaleString()}</p>
+          <p className="text-xs text-slate-500">repositories</p>
         </div>
       </div>
     </motion.div>
@@ -233,20 +212,21 @@ export default function Discovery() {
   const [activeTab, setActiveTab] = useState<TabType>('repositories');
 
   useEffect(() => {
+    const controller = new AbortController();
     const fetchDiscovery = async () => {
       try {
-        const response = await fetch('/api/v1/india/discovery');
-        if (!response.ok) throw new Error('Failed to fetch discovery');
-        const data = await response.json();
-        setDiscovery(data);
+        const data = await api.getDiscovery(controller.signal);
+        if (!controller.signal.aborted) setDiscovery(data);
       } catch (error) {
+        if ((error as { name?: string })?.name === 'AbortError') return;
         console.error('Failed to fetch discovery data', error);
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       }
     };
 
     fetchDiscovery();
+    return () => controller.abort();
   }, []);
 
   if (loading) {

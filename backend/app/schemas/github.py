@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Optional
 
-from pydantic import BaseModel  # noqa: E402  # noqa: E402  # noqa: E402
+from pydantic import BaseModel, field_validator  # noqa: E402  # noqa: E402  # noqa: E402
 
 
 class RepositoryBase(BaseModel):
@@ -29,6 +29,12 @@ class RepositoryBase(BaseModel):
     classification: Optional[dict[str, Any]] = None
     embedding: Optional[list[float]] = None
 
+    @field_validator("topics", mode="before")
+    @classmethod
+    def _topics_not_null(cls, v: Any) -> Any:
+        """Repositories may have NULL topics in the DB; expose as [] instead."""
+        return v or []
+
 
 class RepositoryCreate(RepositoryBase):
     pass
@@ -40,6 +46,23 @@ class RepositoryResponse(RepositoryBase):
     classification_updated_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
+
+
+class RepositoryOwnerResponse(BaseModel):
+    """Owner details for repository detail drill-down."""
+
+    login: str
+    avatar_url: Optional[str] = None
+    location: Optional[str] = None
+    state: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
+
+class RepositoryDetailResponse(RepositoryResponse):
+    """Repository detail response including resolved owner info."""
+
+    owner: Optional[RepositoryOwnerResponse] = None
 
 
 class GitHubEventBase(BaseModel):

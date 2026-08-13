@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { Sparkles, X, ChevronRight, Loader2, Bot, ExternalLink, Star } from 'lucide-react';
 import { api } from '@/lib/api';
@@ -26,6 +26,21 @@ export default function AskDevAtlas({ query, onClose, sessionId, onSessionChange
   const [isStreaming, setIsStreaming] = useState(true);
   const [citations, setCitations] = useState<Citation[]>([]);
 
+  // Keep the latest session id and callback in refs so the streaming effect can
+  // read the current value without re-running (which would restart the stream).
+  // This preserves conversational session continuity across turns while keeping
+  // cleanup safe and avoiding exhaustive-deps warnings.
+  const sessionIdRef = useRef(sessionId);
+  const onSessionChangeRef = useRef(onSessionChange);
+
+  useEffect(() => {
+    sessionIdRef.current = sessionId;
+  }, [sessionId]);
+
+  useEffect(() => {
+    onSessionChangeRef.current = onSessionChange;
+  }, [onSessionChange]);
+
   useEffect(() => {
     if (!query) return;
     setResponse('');
@@ -45,12 +60,13 @@ export default function AskDevAtlas({ query, onClose, sessionId, onSessionChange
         setResponse((prev) => prev || 'Unable to connect to DevAtlas AI stream.');
       },
       (newSessionId) => {
-        onSessionChange?.(newSessionId);
+        sessionIdRef.current = newSessionId;
+        onSessionChangeRef.current?.(newSessionId);
       },
       (newCitations) => {
         setCitations(newCitations);
       },
-      sessionId
+      sessionIdRef.current
     );
 
     return () => {
@@ -63,13 +79,14 @@ export default function AskDevAtlas({ query, onClose, sessionId, onSessionChange
       initial={{ x: 50, opacity: 0 }}
       animate={{ x: 0, opacity: 1 }}
       exit={{ x: 50, opacity: 0 }}
-      className="absolute top-36 right-12 z-30 w-[420px] pointer-events-none"
+      className="absolute top-40 right-4 left-4 sm:left-auto sm:right-12 sm:top-36 z-30 w-auto sm:w-[420px] pointer-events-none"
     >
       <div className="glass-premium rounded-3xl p-6 shadow-2xl relative overflow-hidden group pointer-events-auto edge-light border border-indigo-500/30">
         <div className="absolute top-0 right-0 w-48 h-48 bg-indigo-500/10 rounded-full blur-3xl group-hover:bg-indigo-500/20 transition-colors" />
 
         <button
           onClick={onClose}
+          aria-label="Close DevAtlas AI copilot"
           className="absolute top-4 right-4 text-slate-400 hover:text-white transition-colors"
         >
           <X size={18} />

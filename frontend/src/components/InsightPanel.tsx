@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { useCallback, useEffect, useState } from 'react';
+import { motion } from 'framer-motion';
 import { 
   Lightbulb, 
   MapPin, 
@@ -17,17 +17,7 @@ import {
   RefreshCw
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-
-interface Insight {
-  id: string;
-  text: string;
-  category: string;
-  region: string | null;
-  metric_type: string;
-  metric_value: number | null;
-  time_range: string;
-  generated_at: string;
-}
+import { api, Insight } from '@/lib/api';
 
 interface InsightPanelProps {
   limit?: number;
@@ -118,29 +108,44 @@ export default function InsightPanel({
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
-  const fetchInsights = async () => {
+  const fetchInsights = useCallback(async (signal: AbortSignal) => {
     try {
-      const response = await fetch(`/api/v1/india/insights?limit=${limit}`);
-      if (!response.ok) throw new Error('Failed to fetch insights');
-      const data = await response.json();
+      const data = await api.getInsights(limit, signal);
+      // The request may have been cancelled (unmount/refresh) while in flight —
+      // a stale success result must not touch state.
+      if (signal.aborted) return;
       setInsights(data);
       setError(null);
       setLastUpdated(new Date());
     } catch (err) {
+      // Aborted requests are expected on unmount/refresh — ignore them.
+      if (signal.aborted) return;
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      if (err instanceof Error && err.name === 'AbortError') return;
       setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
-      setLoading(false);
+      // Cancelled requests must not reset loading either — a stale request
+      // cannot update state on an unmounted/refreshed component.
+      if (!signal.aborted) {
+        setLoading(false);
+      }
     }
-  };
+  }, [limit]);
 
   useEffect(() => {
-    fetchInsights();
+    const controller = new AbortController();
+    fetchInsights(controller.signal);
 
+    let interval: ReturnType<typeof setInterval> | undefined;
     if (autoRefresh) {
-      const interval = setInterval(fetchInsights, refreshInterval);
-      return () => clearInterval(interval);
+      interval = setInterval(() => fetchInsights(controller.signal), refreshInterval);
     }
-  }, [limit, autoRefresh, refreshInterval]);
+
+    return () => {
+      controller.abort();
+      if (interval) clearInterval(interval);
+    };
+  }, [limit, autoRefresh, refreshInterval, fetchInsights]);
 
   if (loading) {
     return (

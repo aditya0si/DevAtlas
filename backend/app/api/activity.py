@@ -23,6 +23,7 @@ from app.models.github import (
     GitHubEvent, GitHubUser, Repository, ActivityScore, EcosystemScore,
     DailyAggregation, HourlyAggregation,
 )
+from app.schemas.geospatial import GeoJSONFeature, GeoJSONFeatureCollection
 
 router = APIRouter()
 settings = get_settings()
@@ -31,17 +32,6 @@ settings = get_settings()
 # ─────────────────────────────────────────────────────────────
 # Schemas
 # ─────────────────────────────────────────────────────────────
-
-class GeoJSONFeature(BaseModel):
-    type: str = "Feature"
-    geometry: dict
-    properties: dict
-
-
-class GeoJSONFeatureCollection(BaseModel):
-    type: str = "FeatureCollection"
-    features: list[GeoJSONFeature]
-
 
 class ActivityScoreResponse(BaseModel):
     entity_type: str
@@ -138,7 +128,11 @@ TIME_WINDOWS = {
 async def get_activity_heatmap(
     db: AsyncSession = Depends(get_db),
     bbox: str = Query(default="-180,-90,180,90", description="Bounding box: minLon,minLat,maxLon,maxLat"),
-    layer: str = Query(default="development_activity", description="Map layer: developer_presence, development_activity, or domain name"),
+    layer: str = Query(
+        default="development_activity",
+        description="Map layer: developer_presence, development_activity, or domain name",
+        pattern="^(developer_presence|development_activity|ai|cybersecurity|healthcare|robotics|cloud|devops|web|mobile|fintech|developer_tools)$",
+    ),
     time_range: str = Query(default="30d", description="Time window: 24h, 7d, 30d, 12m"),
     limit: int = Query(default=2000, le=10000),
 ) -> GeoJSONFeatureCollection:
@@ -468,25 +462,35 @@ async def get_domain_statistics(
     period: str = Query(default="30d"),
     limit: int = Query(default=20, le=100),
 ) -> list[DomainStatsResponse]:
-    """Get PushEvent statistics by domain."""
+    """Get PushEvent statistics by domain.
+
+    Uses the enriched ``GitHubEvent.domain`` when available, falling back to the
+    repository's ``classification->>'domain'`` so domain stats remain populated
+    even when event enrichment has not run yet.
+    """
     end = datetime.now(timezone.utc)
     window = TIME_WINDOWS.get(period, TIME_WINDOWS["30d"])
     start = end - window
 
+    domain_expr = func.coalesce(
+        func.nullif(GitHubEvent.domain, ""),
+        Repository.classification.op("->>")("domain"),
+    )
     result = await db.execute(
         select(
-            GitHubEvent.domain,
+            domain_expr.label("domain"),
             func.count(GitHubEvent.id).label("push_count"),
             func.count(func.distinct(GitHubEvent.actor_login)).label("dev_count"),
             func.count(func.distinct(GitHubEvent.repo_id)).label("repo_count"),
         )
+        .outerjoin(Repository, GitHubEvent.repository_id == Repository.id)
         .where(
             GitHubEvent.event_type == "PushEvent",
             GitHubEvent.created_at >= start,
-            GitHubEvent.domain.isnot(None),
-            GitHubEvent.domain != "",
+            domain_expr.isnot(None),
+            domain_expr != "",
         )
-        .group_by(GitHubEvent.domain)
+        .group_by(domain_expr)
         .order_by(func.count(GitHubEvent.id).desc())
         .limit(limit)
     )
