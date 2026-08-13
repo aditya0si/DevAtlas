@@ -12,15 +12,16 @@ import pytest
 
 @pytest.fixture
 def no_ai_keys(monkeypatch):
-    """Simulate a deployment without OpenAI/Gemini keys.
+    """Simulate a deployment without OpenAI/Gemini/Groq keys.
 
     Patches the shared cached ``Settings`` instance so any provider chain built
-    during the test excludes both live providers.
+    during the test excludes all live providers.
     """
     from app.services import ai_service
 
     monkeypatch.setattr(ai_service.settings, "openai_api_key", None)
     monkeypatch.setattr(ai_service.settings, "gemini_api_key", None)
+    monkeypatch.setattr(ai_service.settings, "groq_api_key", None)
     # Keep the fallback deterministic regardless of whether a local Ollama is
     # actually running by disabling the availability probe.
     monkeypatch.setattr(

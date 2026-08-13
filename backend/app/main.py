@@ -58,8 +58,8 @@ def validate_required_env() -> list[str]:
     if not settings.jwt_secret_key or settings.jwt_secret_key == "change-me":
         missing.append("JWT_SECRET_KEY")
     if settings.environment == "production":
-        if not settings.openai_api_key and not settings.gemini_api_key:
-            missing.append("OPENAI_API_KEY or GEMINI_API_KEY")
+        if not (settings.openai_api_key or settings.gemini_api_key or settings.groq_api_key):
+            missing.append("OPENAI_API_KEY, GEMINI_API_KEY, or GROQ_API_KEY")
     return missing
 
 

@@ -1,9 +1,13 @@
-from abc import ABC, abstractmethod
 import json
+import logging
+from abc import ABC, abstractmethod
 from typing import Any, AsyncGenerator
-from pydantic import BaseModel, Field
+
+from pydantic import BaseModel, Field, ValidationError
 
 from app.core.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
@@ -221,6 +225,97 @@ class OpenAIProvider(AIProvider):
             if content:
                 yield content
 
+class GroqProvider(AIProvider):
+    """Groq provider using the OpenAI SDK against Groq's OpenAI-compatible API.
+
+    Groq does not offer embeddings, so ``generate_embedding`` raises and the
+    fallback chain skips Groq, continuing to the configured embedding providers
+    (OpenAI/Gemini/Ollama) or the deterministic local fallback.
+    """
+
+    BASE_URL = "https://api.groq.com/openai/v1"
+
+    def __init__(self):
+        try:
+            from openai import AsyncOpenAI
+            self.client = (
+                AsyncOpenAI(api_key=settings.groq_api_key, base_url=self.BASE_URL)
+                if settings.groq_api_key
+                else None
+            )
+        except ImportError:
+            self.client = None
+
+    async def classify_repository(self, prompt: str) -> dict[str, Any]:
+        if not self.client:
+            raise RuntimeError("openai SDK not installed or GROQ_API_KEY not configured")
+
+        response = await self.client.chat.completions.create(
+            model=settings.groq_model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an expert software engineer analyzing GitHub "
+                        "repositories. Respond with JSON only."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            # Groq's OpenAI-compatible API supports structured JSON output via
+            # response_format (unlike the OpenAI beta parse API, which Groq
+            # does not implement).
+            response_format={"type": "json_object"},
+            temperature=0.1,
+        )
+        content = response.choices[0].message.content
+        if not content:
+            raise RuntimeError("Groq returned an empty classification response")
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"Groq returned invalid JSON for classification: {exc}"
+            ) from exc
+        try:
+            classification = RepositoryClassification.model_validate(data)
+        except ValidationError as exc:
+            raise RuntimeError(
+                f"Groq classification did not match the expected schema: {exc}"
+            ) from exc
+        return classification.model_dump()
+
+    async def generate_embedding(self, text: str) -> list[float]:
+        raise RuntimeError(
+            "Groq does not provide embeddings; use OpenAI/Gemini/Ollama embedding providers"
+        )
+
+    async def stream_text(self, system_prompt: str, user_prompt: str) -> AsyncGenerator[str, None]:
+        if not self.client:
+            yield "Groq API key is not configured. Returning analysis baseline.\n"
+            yield f"Query: {user_prompt}\n"
+            baseline = (
+                "India developer ecosystem shows high growth in AI, Cloud, and "
+                "Web3 repositories across Karnataka and Telangana."
+            )
+            yield baseline
+            return
+
+        response = await self.client.chat.completions.create(
+            model=settings.groq_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            stream=True,
+            temperature=0.3,
+        )
+        async for chunk in response:
+            content = chunk.choices[0].delta.content or ""
+            if content:
+                yield content
+
+
 class MockAIProvider(AIProvider):
     async def classify_repository(self, prompt: str) -> dict[str, Any]:
         return {
@@ -241,10 +336,16 @@ class MockAIProvider(AIProvider):
             yield word + " "
 
 class FallbackChainProvider(AIProvider):
-    """Resilient provider that cascades through OpenAI -> Gemini -> MockAI on failure."""
+    """Resilient provider cascading Groq -> OpenAI -> Gemini -> Ollama -> MockAI.
+
+    Groq is preferred when ``GROQ_API_KEY`` is configured; OpenAI and Gemini
+    remain available for backward compatibility when their env vars exist.
+    """
 
     def __init__(self):
         self.providers: list[AIProvider] = []
+        if settings.groq_api_key:
+            self.providers.append(GroqProvider())
         if settings.openai_api_key:
             self.providers.append(OpenAIProvider())
         if settings.gemini_api_key:
@@ -263,10 +364,36 @@ class FallbackChainProvider(AIProvider):
     async def generate_embedding(self, text: str) -> list[float]:
         for provider in self.providers:
             try:
+                if isinstance(provider, MockAIProvider):
+                    self._log_embedding_fallback_warning()
                 return await provider.generate_embedding(text)
             except Exception:
                 continue
+        self._log_embedding_fallback_warning()
         return await MockAIProvider().generate_embedding(text)
+
+    def _log_embedding_fallback_warning(self) -> None:
+        """Log when embeddings fall through to the deterministic MockAI provider.
+
+        Groq does not offer embeddings, so a Groq-only deployment silently
+        degrades semantic search to deterministic vectors unless an
+        embedding-capable provider (OpenAI/Gemini/Ollama) is configured. The
+        warning makes that degradation visible in the logs.
+        """
+        if settings.groq_api_key and not (
+            settings.openai_api_key or settings.gemini_api_key
+        ):
+            logger.warning(
+                "Groq does not provide embeddings and no other embedding-capable "
+                "provider (OpenAI/Gemini/Ollama) is available; falling back to "
+                "deterministic MockAI embeddings. Semantic search quality will "
+                "be degraded."
+            )
+        else:
+            logger.warning(
+                "All embedding providers failed; falling back to deterministic "
+                "MockAI embeddings. Semantic search quality will be degraded."
+            )
 
     async def stream_text(self, system_prompt: str, user_prompt: str) -> AsyncGenerator[str, None]:
         for provider in self.providers:
