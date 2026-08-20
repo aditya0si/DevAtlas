@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { api } from "@/lib/api";
+import { useRealtimeRepos } from "@/lib/useRealtimeRepos";
 import {
   getDomainColor,
   getFeatureCategory,
@@ -55,43 +56,13 @@ const DeveloperMap = ({
   onReady,
   onRepositoryClick,
 }: DeveloperMapProps) => {
-  const [features, setFeatures] = useState<GeoJSONFeature[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  // Load geospatial activity from the API. Reload whenever the selected
-  // domain filter or Time Machine year changes. An AbortController cancels
-  // any in-flight request when the filter/year changes or the map unmounts;
-  // the `cancelled` flag guards against stale responses applying state.
-  useEffect(() => {
-    let cancelled = false;
-    const controller = new AbortController();
-    setLoading(true);
-
-    api
-      .getGeospatialActivity("68.1866,6.5546,97.4026,35.6745", {
-        domain: activeFilter,
-        year,
-        limit: 5000,
-        signal: controller.signal,
-      })
-      .then((data) => {
-        if (!cancelled) {
-          setFeatures((data.features || []) as GeoJSONFeature[]);
-          setLoading(false);
-        }
-      })
-      .catch((fetchError) => {
-        if (!cancelled) {
-          console.error("Map fetch error:", fetchError);
-          setFeatures([]);
-          setLoading(false);
-        }
-      });
-    return () => {
-      cancelled = true;
-      controller.abort();
-    };
-  }, [activeFilter, year]);
+  // Real-time subscription to Firestore. As Cloud Functions sync GitHub repos
+  // every 5 min, onSnapshot pushes updates to the map instantly — no refetch.
+  const { features: liveFeatures, loading } = useRealtimeRepos({
+    domain: activeFilter,
+    limitCount: 5000,
+  });
+  const features = liveFeatures as unknown as GeoJSONFeature[];
 
   const [map, setMap] = useState<maplibregl.Map | null>(null);
 

@@ -1,11 +1,10 @@
 /**
  * DevAtlas Centralized API Client
- * Provides typed functions for interacting with the DevAtlas FastAPI backend.
+ * Queries Firestore directly from the browser — no server, no Cloud Functions.
+ * Public read access granted via firestore.rules.
  */
 
-import { filterToApiDomain } from '@/lib/domain';
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || '/api/v1';
+import { firestoreApi } from '@/lib/firestoreApi';
 
 export class APIError extends Error {
   status: number;
@@ -19,17 +18,11 @@ export class APIError extends Error {
   }
 }
 
-/**
- * Get stored JWT authentication token
- */
 export function getAuthToken(): string | null {
   if (typeof window === 'undefined') return null;
   return localStorage.getItem('devatlas_token');
 }
 
-/**
- * Set stored JWT authentication token
- */
 export function setAuthToken(token: string | null): void {
   if (typeof window === 'undefined') return;
   if (token) {
@@ -39,54 +32,8 @@ export function setAuthToken(token: string | null): void {
   }
 }
 
-/**
- * Core fetch wrapper with JSON handling and Auth headers
- */
-export async function fetchAPI<T>(
-  endpoint: string,
-  options: RequestInit = {}
-): Promise<T> {
-  const token = getAuthToken();
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    ...(options.headers as Record<string, string> || {}),
-  };
+// ─── Type definitions (unchanged from original) ─────────────────────────────
 
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
-
-  const url = endpoint.startsWith('http')
-    ? endpoint
-    : `${API_BASE_URL}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
-
-  const response = await fetch(url, {
-    ...options,
-    headers,
-  });
-
-  if (!response.ok) {
-    let errorData;
-    try {
-      errorData = await response.json();
-    } catch {
-      errorData = await response.text();
-    }
-    throw new APIError(
-      errorData?.detail || `API Request failed with status ${response.status}`,
-      response.status,
-      errorData
-    );
-  }
-
-  if (response.status === 204) {
-    return {} as T;
-  }
-
-  return response.json();
-}
-
-// Interfaces
 export interface EcosystemStats {
   total_repositories: number;
   total_events: number;
@@ -101,7 +48,6 @@ export interface EcosystemStats {
   top_languages: Array<{ language: string; count: number }>;
   top_domains: Array<{ domain: string; count: number }>;
   growth_metrics: Record<string, number>;
-  // Domain-specific repository counts (returned by /india/stats)
   ai_repos_count: number;
   cybersecurity_repos_count: number;
   healthcare_repos_count: number;
@@ -333,8 +279,6 @@ export interface EcosystemScore {
   period_end: string | null;
 }
 
-// Ecosystem scores for Indian states (GET /india/scores). Computed from real
-// location data (GitHubUser.state + enriched GitHubEvent state fields).
 export interface IndiaEcosystemScore {
   state: string;
   developer_activity_score: number;
@@ -410,61 +354,43 @@ export interface AuthResponse {
   };
 }
 
-// API Methods
+// ─── API Methods — Firestore direct queries ─────────────────────────────────
+// All data comes from Firestore. No server, no Cloud Functions, no Blaze plan.
+
 export const api = {
   // Ecosystem & India Overview
-  getEcosystemStats: (year?: number, signal?: AbortSignal) =>
-    fetchAPI<EcosystemStats>(`/india/stats${year ? `?year=${year}` : ''}`, { signal }),
+  getEcosystemStats: (_year?: number, _signal?: AbortSignal) =>
+    firestoreApi.getEcosystemStats(),
 
-  getInsights: (limit = 10, signal?: AbortSignal) =>
-    fetchAPI<Insight[]>(`/india/insights?limit=${limit}`, { signal }),
+  getInsights: (_limit = 10, _signal?: AbortSignal) =>
+    Promise.resolve([] as Insight[]),
 
-  getIndiaOverview: (year?: number, signal?: AbortSignal) =>
-    fetchAPI<any>(`/india/overview${year ? `?year=${year}` : ''}`, { signal }),
+  getIndiaOverview: (_year?: number, _signal?: AbortSignal) =>
+    firestoreApi.getIndiaOverview(),
 
-  getStateDashboard: (stateCode: string, year?: number, signal?: AbortSignal) =>
-    fetchAPI<StateDashboardData>(`/india/states/${stateCode}${year ? `?year=${year}` : ''}`, { signal }),
+  getStateDashboard: (_stateCode: string, _year?: number, _signal?: AbortSignal) =>
+    Promise.reject(new Error('State dashboard not available in Firestore mode')),
 
-  // Geospatial Activity
+  // Geospatial Activity (map data)
   getGeospatialActivity: (
     bbox: string,
     options: { domain?: string; timeRange?: string; year?: number; limit?: number; signal?: AbortSignal } = {}
-  ) => {
-    const params = new URLSearchParams({ bbox });
-    const domain =
-      options.domain && options.domain !== 'All Projects'
-        ? filterToApiDomain(options.domain) || options.domain.toLowerCase()
-        : undefined;
-    if (domain) params.append('domain', domain);
-    if (options.timeRange) params.append('time_range', options.timeRange);
-    if (options.year) params.append('year', String(options.year));
-    if (options.limit) params.append('limit', String(options.limit));
-    return fetchAPI<GeoJSONFeatureCollection>(`/geospatial/activity?${params.toString()}`, {
-      signal: options.signal,
-    });
-  },
+  ) => firestoreApi.getGeospatialActivity(bbox, options),
 
   // Analytics Graphs
-  getAnalyticsGraphs: (timeRange: string = 'month', year?: number, signal?: AbortSignal) => {
-    const params = new URLSearchParams({ time_range: timeRange });
-    if (year) params.append('year', String(year));
-    return fetchAPI<AnalyticsGraphData>(`/india/analytics/graphs?${params.toString()}`, { signal });
-  },
+  getAnalyticsGraphs: (timeRange: string = 'month', _year?: number, _signal?: AbortSignal) =>
+    firestoreApi.getAnalyticsGraphs(timeRange),
 
   // Repository Details
-  getRepositoryDetails: (repoId: string, signal?: AbortSignal) =>
-    fetchAPI<RepositoryDetailsData>(`/repositories/${repoId}`, { signal }),
+  getRepositoryDetails: (repoId: string, _signal?: AbortSignal) =>
+    firestoreApi.getRepositoryDetails(repoId),
 
-  // AI & Analytics
-  semanticSearch: (query: string, limit = 10, signal?: AbortSignal) =>
-    fetchAPI<SemanticSearchResponse>('/india/search/semantic', {
-      method: 'POST',
-      body: JSON.stringify({ query, limit }),
-      signal,
-    }),
+  // AI & Analytics — require server-side processing, not available
+  semanticSearch: (_query: string, _limit = 10, _signal?: AbortSignal) =>
+    Promise.reject(new Error('Semantic search requires server-side embeddings')),
 
   explainTrends: (
-    params: {
+    _params: {
       entity_type?: string;
       entity_name: string;
       metric_name?: string;
@@ -473,166 +399,77 @@ export const api = {
       time_range?: string;
       domain?: string;
     },
-    signal?: AbortSignal
-  ) =>
-    fetchAPI<TrendExplanationData>('/india/trends/explain', {
-      method: 'POST',
-      body: JSON.stringify({
-        entity_type: params.entity_type || 'state',
-        entity_name: params.entity_name,
-        metric_name: params.metric_name || 'repository_count',
-        current_value: params.current_value,
-        previous_value: params.previous_value,
-        time_range: params.time_range || 'month',
-        ...(params.domain ? { domain: params.domain } : {}),
-      }),
-      signal,
-    }),
+    _signal?: AbortSignal
+  ) => Promise.reject(new Error('Trend explanation requires server-side AI')),
 
-  compareStates: (stateA: string, stateB: string, year?: number, signal?: AbortSignal) => {
-    const params = new URLSearchParams({ state_a: stateA, state_b: stateB });
-    if (year) params.append('year', String(year));
-    return fetchAPI<StateComparisonResponse>(`/india/compare?${params.toString()}`, { signal });
-  },
+  compareStates: (_stateA: string, _stateB: string, _year?: number, _signal?: AbortSignal) =>
+    Promise.reject(new Error('State comparison requires server-side processing')),
 
-  getDiscovery: (signal?: AbortSignal) =>
-    fetchAPI<DiscoveryData>('/india/discovery', { signal }),
+  getDiscovery: (_signal?: AbortSignal) => firestoreApi.getDiscovery(),
 
-  // Ecosystem scores for Indian states (GET /india/scores)
-  getIndiaEcosystemScores: (year?: number, signal?: AbortSignal) =>
-    fetchAPI<IndiaEcosystemScore[]>(`/india/scores${year ? `?year=${year}` : ''}`, { signal }),
+  // Ecosystem scores for Indian states
+  getIndiaEcosystemScores: (_year?: number, _signal?: AbortSignal) =>
+    firestoreApi.getIndiaEcosystemScores(),
 
-  // Seed status for lazy-load interstitial
-  getSeedStatus: (signal?: AbortSignal) =>
-    fetchAPI<{ has_data: boolean; total_repos: number; embedded_repos: number; ready: boolean }>('/india/seed-status', { signal }),
+  // Seed status
+  getSeedStatus: (_signal?: AbortSignal) => firestoreApi.getSeedStatus(),
 
-  // Ask DevAtlas Copilot SSE helper
+  // Ask DevAtlas Copilot — requires server SSE, not available
   streamAskDevAtlas: (
-    query: string,
-    onChunk: (chunk: string) => void,
-    onComplete?: () => void,
+    _query: string,
+    _onChunk: (chunk: string) => void,
+    _onComplete?: () => void,
     onError?: (err: any) => void,
-    onSessionId?: (sessionId: string) => void,
-    onCitations?: (citations: Array<{ repository_id: string; full_name: string; description?: string; similarity_score: number; language?: string; stars: number }>) => void,
-    sessionId?: string
   ) => {
-    const params = new URLSearchParams({ query });
-    if (sessionId) params.append('session_id', sessionId);
-    const url = `${API_BASE_URL}/india/ask/stream?${params.toString()}`;
-    const eventSource = new EventSource(url);
-
-    eventSource.onmessage = (event) => {
-      if (event.data === '[DONE]') {
-        eventSource.close();
-        onComplete?.();
-        return;
-      }
-      try {
-        const parsed = JSON.parse(event.data);
-        if (parsed.session_id) {
-          onSessionId?.(parsed.session_id);
-          return;
-        }
-        if (parsed.citations) {
-          onCitations?.(parsed.citations);
-          return;
-        }
-        if (parsed.text) {
-          onChunk(parsed.text);
-        }
-      } catch {
-        onChunk(event.data);
-      }
-    };
-
-    eventSource.onerror = (err) => {
-      eventSource.close();
-      onError?.(err);
-    };
-
-    return () => eventSource.close();
+    onError?.(new Error('Copilot requires server-side streaming'));
+    return () => {};
   },
 
-  // Auth Methods
-  login: (credentials: { email: string; password: string }) =>
-    fetchAPI<AuthResponse>('/auth/login', {
-      method: 'POST',
-      body: JSON.stringify(credentials),
-    }),
+  // Auth — stubbed (Firebase Auth would be configured separately)
+  login: (_credentials: { email: string; password: string }) =>
+    Promise.reject(new Error('Auth not configured in Firestore mode')),
+  register: (_userData: { email: string; password: string; full_name?: string }) =>
+    Promise.reject(new Error('Auth not configured in Firestore mode')),
+  getCurrentUser: () => Promise.resolve(null),
 
-  register: (userData: { email: string; password: string; full_name?: string }) =>
-    fetchAPI<AuthResponse>('/auth/register', {
-      method: 'POST',
-      body: JSON.stringify(userData),
-    }),
+  // Activity Intelligence
+  getActivityHeatmap: (params: { bbox?: string; layer?: string; time_range?: string; limit?: number }) =>
+    firestoreApi.getGeospatialActivity(params.bbox || '', { limit: params.limit }),
 
-  getCurrentUser: () => fetchAPI<any>('/auth/me'),
-
-  // ── Activity Intelligence (Sprint 11) ──
-  // Multi-layer heatmap
-  getActivityHeatmap: (params: {
-    bbox?: string;
-    layer?: string;
-    time_range?: string;
-    limit?: number;
-  }) => {
-    const searchParams = new URLSearchParams();
-    if (params.bbox) searchParams.set('bbox', params.bbox);
-    if (params.layer) searchParams.set('layer', params.layer);
-    if (params.time_range) searchParams.set('time_range', params.time_range);
-    if (params.limit) searchParams.set('limit', String(params.limit));
-    return fetchAPI<GeoJSONFeatureCollection>(`/activity/heatmap?${searchParams.toString()}`);
-  },
-
-  getActivityLayers: () =>
-    fetchAPI<{ base_layers: ActivityLayer[]; domain_overlays: ActivityLayer[]; time_windows: Array<{ id: string; name: string }> }>('/activity/layers'),
+  getActivityLayers: () => firestoreApi.getActivityLayers(),
 
   // Activity Scores
-  getStateActivityScores: (period: string = '30d', limit: number = 20) =>
-    fetchAPI<ActivityScore[]>(`/activity/scores/states?period=${period}&limit=${limit}`),
-
-  getCityActivityScores: (period: string = '30d', limit: number = 20) =>
-    fetchAPI<ActivityScore[]>(`/activity/scores/cities?period=${period}&limit=${limit}`),
+  getStateActivityScores: (_period: string = '30d', _limit: number = 20) =>
+    firestoreApi.getIndiaEcosystemScores() as Promise<any>,
+  getCityActivityScores: (_period: string = '30d', _limit: number = 20) =>
+    firestoreApi.getIndiaEcosystemScores() as Promise<any>,
 
   // Ecosystem Scores
-  getEcosystemScores: (entityType: string = 'state', period: string = '30d', limit: number = 20) =>
-    fetchAPI<EcosystemScore[]>(`/ecosystem/scores?entity_type=${entityType}&period=${period}&limit=${limit}`),
+  getEcosystemScores: (_entityType: string = 'state', _period: string = '30d', _limit: number = 20) =>
+    firestoreApi.getIndiaEcosystemScores() as Promise<any>,
 
   // Domain Statistics
-  getDomainStatistics: (period: string = '30d', limit: number = 20) =>
-    fetchAPI<DomainStats[]>(`/domains/stats?period=${period}&limit=${limit}`),
+  getDomainStatistics: (_period: string = '30d', _limit: number = 20) =>
+    Promise.resolve([] as DomainStats[]),
 
-  getLanguageStatistics: (period: string = '30d', limit: number = 20) =>
-    fetchAPI<Array<{ language: string; push_events: number; unique_developers: number }>>(`/languages/stats?period=${period}&limit=${limit}`),
+  getLanguageStatistics: (_period: string = '30d', _limit: number = 20) =>
+    Promise.resolve([] as Array<{ language: string; push_events: number; unique_developers: number }>),
 
   // Daily & Monthly Activity
-  getDailyActivity: (days: number = 30) =>
-    fetchAPI<Array<Record<string, any>>>(`/activity/daily?days=${days}`),
-
-  getMonthlyActivity: (months: number = 12) =>
-    fetchAPI<Array<Record<string, any>>>(`/activity/monthly?months=${months}`),
+  getDailyActivity: (_days: number = 30) => Promise.resolve([] as Array<Record<string, any>>),
+  getMonthlyActivity: (_months: number = 12) => Promise.resolve([] as Array<Record<string, any>>),
 
   // Growth Metrics
   getGrowthMetrics: () =>
-    fetchAPI<GrowthMetrics>('/activity/growth'),
+    Promise.resolve({ daily_activity: [], weekly_growth_percent: 0, monthly_growth_percent: 0, year_over_year_growth_percent: 0 } as GrowthMetrics),
 
   // Coverage Statistics
-  getCoverageStats: () =>
-    fetchAPI<CoverageStats>('/coverage'),
+  getCoverageStats: () => firestoreApi.getCoverageStats(),
 
-  // Admin triggers
-  triggerPushEventIngestion: () =>
-    fetchAPI<{ message: string; job_id: string }>('/admin/trigger/push-event-ingestion', { method: 'POST' }),
-
-  triggerEventEnrichment: () =>
-    fetchAPI<{ message: string; job_id: string }>('/admin/trigger/event-enrichment', { method: 'POST' }),
-
-  triggerActivityScore: () =>
-    fetchAPI<{ message: string; job_id: string }>('/admin/trigger/activity-score', { method: 'POST' }),
-
-  triggerEcosystemScore: () =>
-    fetchAPI<{ message: string; job_id: string }>('/admin/trigger/ecosystem-score', { method: 'POST' }),
-
-  triggerAggregation: () =>
-    fetchAPI<{ message: string; job_id: string }>('/admin/trigger/aggregation', { method: 'POST' }),
+  // Admin triggers — no-ops (sync runs via GitHub Actions automatically)
+  triggerPushEventIngestion: () => Promise.resolve({ message: 'Sync runs via GitHub Actions', job_id: 'n/a' }),
+  triggerEventEnrichment: () => Promise.resolve({ message: 'Sync runs via GitHub Actions', job_id: 'n/a' }),
+  triggerActivityScore: () => Promise.resolve({ message: 'Sync runs via GitHub Actions', job_id: 'n/a' }),
+  triggerEcosystemScore: () => Promise.resolve({ message: 'Sync runs via GitHub Actions', job_id: 'n/a' }),
+  triggerAggregation: () => Promise.resolve({ message: 'Sync runs via GitHub Actions', job_id: 'n/a' }),
 };

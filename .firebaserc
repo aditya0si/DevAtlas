@@ -1,0 +1,12 @@
+{
+  "projects": {
+    "default": "gitlatitude"
+  },
+  "targets": {
+    "gitlatitude": {
+      "hosting": {
+        "gitlatitude": ["gitlatitude"]
+      }
+    }
+  }
+}

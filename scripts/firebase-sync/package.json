@@ -1,0 +1,14 @@
+{
+  "name": "devatlas-firebase-sync",
+  "version": "1.0.0",
+  "description": "GitHub Actions worker that discovers Indian developers, classifies their repos with Gemini, and writes to Firestore",
+  "main": "sync.js",
+  "scripts": {
+    "start": "node sync.js",
+    "seed": "node seed.js"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.1.0"
+  },
+  "private": true
+}

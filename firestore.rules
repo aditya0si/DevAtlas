@@ -1,0 +1,33 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Public read access for ecosystem data (heatmap, repos, events, stats).
+    // Writes only from Cloud Functions (admin SDK bypasses these rules).
+    match /repositories/{repoId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    match /developers/{userId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    match /events/{eventId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    match /stats/{statId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Private user profiles for the app's own auth (optional).
+    match /users/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if request.auth != null && request.auth.uid == uid;
+    }
+  }
+}
