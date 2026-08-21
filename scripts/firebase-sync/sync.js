@@ -7,7 +7,7 @@
  * Firestore. The frontend's onSnapshot listener picks up changes in real time.
  *
  * Env vars (set as GitHub Actions secrets):
- *   GITHUB_TOKEN           - GitHub PAT (public_repo scope)
+ *   GIT_TOKEN              - GitHub PAT (public_repo scope)
  *   GEMINI_API_KEY         - Google AI Studio API key
  *   FIREBASE_SERVICE_ACCOUNT - JSON key for a Firebase service account
  */
@@ -22,7 +22,7 @@ admin.initializeApp({
 });
 const db = admin.firestore();
 
-const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+const GITHUB_TOKEN = process.env.GIT_TOKEN;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 // ─── GitHub API helpers ────────────────────────────────────────────────────
@@ -101,7 +101,7 @@ Respond with only the domain name, nothing else.`;
 
   try {
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -312,7 +312,7 @@ async function main() {
               classification: {
                 domain: domain,
                 classified_at: admin.firestore.FieldValue.serverTimestamp(),
-                model: "gemini-2.0-flash",
+                model: "gemini-2.5-flash",
               },
             });
           }
@@ -360,7 +360,7 @@ async function sweepBacklog() {
             classification: {
               domain: domain,
               classified_at: admin.firestore.FieldValue.serverTimestamp(),
-              model: "gemini-2.0-flash",
+              model: "gemini-2.5-flash",
             },
           });
         }
