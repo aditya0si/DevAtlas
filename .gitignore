@@ -34,7 +34,6 @@ credentials/
 Thumbs.db
 
 docker-compose.yml
-backend/.env.example
 monitoring/docker-compose.monitoring.yml
 deploy/kubernetes/secrets.yaml
 
@@ -48,3 +47,5 @@ docs/roadmap.md
 # Test artifacts
 frontend/test-results/
 frontend/screenshots/
+.env.local
+!.env.example
