@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncGenerator
+from uuid import uuid4
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -20,6 +21,10 @@ TEST_DATABASE_URL = os.environ.get(
 )
 engine = create_async_engine(TEST_DATABASE_URL, echo=True, poolclass=NullPool)
 TestingSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+# Resolved once per session by ``_check_redis`` so per-test limiter cleanup does
+# not pay a connection timeout on every test when Redis is not running.
+_redis_available: bool | None = None
 
 
 @pytest_asyncio.fixture(scope="session")
@@ -59,6 +64,53 @@ async def _reset_cache_service():
     await close_cache_service()
 
 
+@pytest_asyncio.fixture(scope="session", autouse=True)
+async def _check_redis() -> AsyncGenerator[None, None]:
+    """Detect once per session whether Redis is reachable."""
+    global _redis_available
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    if settings.redis_url:
+        import redis.asyncio as aioredis
+
+        redis_client = aioredis.from_url(settings.redis_url, socket_connect_timeout=2)
+        try:
+            await redis_client.ping()
+            _redis_available = True
+        except Exception:
+            _redis_available = False
+        finally:
+            await redis_client.close()
+    else:
+        _redis_available = False
+    yield
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _reset_rate_limiter() -> AsyncGenerator[None, None]:
+    """Clear the Redis-backed rate limiter between tests.
+
+    Redis is available in CI, so the production rate limiter counts every
+    request issued through the shared test client. The tests are independent,
+    so a suite must not inherit another test's request budget. Only the
+    limiter's own keys are removed; production limits are left untouched.
+    """
+    if _redis_available:
+        try:
+            from app.core.redis import get_redis
+
+            redis_client = await get_redis()
+            keys = await redis_client.keys("rate_limit:*")
+            if keys:
+                await redis_client.delete(*keys)
+        except Exception:
+            # The middleware fails open when Redis is unreachable, so there is
+            # nothing to reset.
+            pass
+    yield
+
+
 @pytest_asyncio.fixture
 async def client(db: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
     async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
@@ -73,7 +125,13 @@ async def client(db: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
 
 @pytest_asyncio.fixture
 async def test_user(db: AsyncSession) -> User:
-    user = User(email="test@example.com", hashed_password=hash_password("testpass123"), full_name="Test User")
+    # The integration schema is not rolled back between tests and users.email is
+    # unique, so every test that requests this fixture gets its own account.
+    user = User(
+        email=f"test-{uuid4()}@example.com",
+        hashed_password=hash_password("testpass123"),
+        full_name="Test User",
+    )
     db.add(user)
     await db.commit()
     await db.refresh(user)

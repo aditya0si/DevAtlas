@@ -4,6 +4,7 @@ import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from uuid import uuid4
 
 import bcrypt
 import jwt
@@ -67,7 +68,10 @@ def create_refresh_token(subject: str, family_id: Optional[str] = None) -> tuple
     Returns: (token_string, token_hash, family_id)
     """
     if family_id is None:
-        family_id = secrets.token_urlsafe(32)
+        # refresh_tokens.family_id is a UUID column, so the family identifier
+        # must be a UUID (secrets.token_urlsafe(32) is 43 chars and would make
+        # the INSERT fail with a DataError).
+        family_id = str(uuid4())
 
     token_id = secrets.token_urlsafe(32)
     expire = datetime.now(timezone.utc) + timedelta(minutes=settings.refresh_token_expire_minutes)

@@ -117,22 +117,25 @@ async def refresh_token(
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
 
-    # Rotate: revoke old token, create new ones
-    await token_repo.revoke_token(stored_token.id)
-    await token_repo.mark_replaced(stored_token.id, "rotated")
-
-    # Create new token pair
+    # Create new token pair first so the rotated token can point at its
+    # replacement. ``replaced_by`` is a UUID column, so it must receive the new
+    # token's id rather than a literal such as "rotated".
     access_token = create_access_token(
         subject=user.id, expires_delta=timedelta(minutes=settings.access_token_expire_minutes)
     )
     new_refresh_token, new_hash, _ = create_refresh_token(subject=user.id, family_id=token_data.family)
 
-    await token_repo.create(
+    new_token = await token_repo.create(
         token_hash=new_hash,
         user_id=user.id,
         family_id=token_data.family,
         expires_at=datetime.now(timezone.utc) + timedelta(minutes=settings.refresh_token_expire_minutes),
     )
+
+    # Rotate: revoke the old token and link it to the replacement
+    await token_repo.revoke_token(stored_token.id)
+    await token_repo.mark_replaced(stored_token.id, new_token.id)
+
     await db.commit()
 
     return Token(access_token=access_token, refresh_token=new_refresh_token)

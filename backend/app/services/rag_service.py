@@ -48,50 +48,57 @@ class RAGService:
         try:
             query_embedding = await provider.generate_embedding(query)
 
-            sim_col = (1 - Repository.embedding.cosine_distance(query_embedding)).label("similarity")
-            stmt = (
-                select(Repository, sim_col)
-                .where(Repository.embedding.isnot(None))
-                .order_by(Repository.embedding.cosine_distance(query_embedding))
-                .limit(top_k)
-            )
-            res = await self.db.execute(stmt)
-            vector_rows = list(res.all())
-
-            keyword_rows = await self._keyword_search(query, top_k)
-            combined = self._merge_results(vector_rows, keyword_rows, top_k)
-            above_threshold = [(r, s) for r, s in combined if float(s or 0) >= self.confidence_threshold]
-
-            if above_threshold:
-                for repo, score in above_threshold:
-                    score_val = round(float(score or 0), 4)
-                    citation = GroundedCitation(
-                        repository_id=repo.id,
-                        full_name=repo.full_name,
-                        description=repo.description,
-                        similarity_score=score_val,
-                        language=repo.language,
-                        stars=repo.stargazers_count,
-                    )
-                    citations.append(citation)
-
-                    context_snippet = (
-                        f"- Repository: {repo.full_name}\n"
-                        f"  Description: {repo.description or 'N/A'}\n"
-                        f"  Language: {repo.language or 'N/A'}\n"
-                        f"  Stars: {repo.stargazers_count} | "
-                        f"Domain: {(repo.classification or {}).get('domain', 'General')}\n"
-                    )
-                    formatted_context_parts.append(context_snippet)
-            else:
-                formatted_context_parts.append(
-                    "- Context: India developer ecosystem telemetry across Bengaluru, Hyderabad, Mumbai, and Delhi NCR."
+            # Run the vector/keyword lookups inside a SAVEPOINT. A failure here
+            # (for example the pgvector extension or its distance operator is
+            # unavailable) aborts only this sub-transaction. Rolling back the
+            # whole session instead would discard unrelated pending work, such
+            # as the chat session and messages that the Ask DevAtlas endpoint
+            # created before requesting RAG context, causing a spurious
+            # "Session <id> not found" on the follow-up message.
+            async with self.db.begin_nested():
+                sim_col = (1 - Repository.embedding.cosine_distance(query_embedding)).label("similarity")
+                stmt = (
+                    select(Repository, sim_col)
+                    .where(Repository.embedding.isnot(None))
+                    .order_by(Repository.embedding.cosine_distance(query_embedding))
+                    .limit(top_k)
                 )
+                res = await self.db.execute(stmt)
+                vector_rows = list(res.all())
+
+                keyword_rows = await self._keyword_search(query, top_k)
+                combined = self._merge_results(vector_rows, keyword_rows, top_k)
+                above_threshold = [(r, s) for r, s in combined if float(s or 0) >= self.confidence_threshold]
+
+                if above_threshold:
+                    for repo, score in above_threshold:
+                        score_val = round(float(score or 0), 4)
+                        citation = GroundedCitation(
+                            repository_id=repo.id,
+                            full_name=repo.full_name,
+                            description=repo.description,
+                            similarity_score=score_val,
+                            language=repo.language,
+                            stars=repo.stargazers_count,
+                        )
+                        citations.append(citation)
+
+                        context_snippet = (
+                            f"- Repository: {repo.full_name}\n"
+                            f"  Description: {repo.description or 'N/A'}\n"
+                            f"  Language: {repo.language or 'N/A'}\n"
+                            f"  Stars: {repo.stargazers_count} | "
+                            f"Domain: {(repo.classification or {}).get('domain', 'General')}\n"
+                        )
+                        formatted_context_parts.append(context_snippet)
+                else:
+                    formatted_context_parts.append(
+                        "- Context: India developer ecosystem telemetry across "
+                        "Bengaluru, Hyderabad, Mumbai, and Delhi NCR."
+                    )
         except Exception:
-            # A failed embedding/vector statement aborts the underlying Postgres
-            # transaction; roll back so subsequent statements on this session do
-            # not fail with InFailedSQLTransactionError.
-            await self.db.rollback()
+            # The savepoint above rolled the failed statement back, so the
+            # outer session (and any earlier pending work) remains usable.
             formatted_context_parts.append(
                 "- Context: India developer ecosystem telemetry across Bengaluru, Hyderabad, Mumbai, and Delhi NCR."
             )
