@@ -1,10 +1,10 @@
-import pytest
-from datetime import datetime, timezone, date
-from uuid import uuid4
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from datetime import date
 
-from app.models.github import SyncState, AnalyticsSnapshot, WorkerRun, Repository, GitHubUser
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.github import AnalyticsSnapshot, GitHubUser, Repository, SyncState, WorkerRun
+
 
 @pytest.mark.asyncio
 async def test_sync_state_creation(db: AsyncSession):
@@ -17,7 +17,7 @@ async def test_sync_state_creation(db: AsyncSession):
     db.add(state)
     await db.commit()
     await db.refresh(state)
-    
+
     assert state.id is not None
     assert state.sync_type == "test_sync"
     assert state.last_github_id == 100
@@ -34,7 +34,7 @@ async def test_analytics_snapshot_creation(db: AsyncSession):
     db.add(snapshot)
     await db.commit()
     await db.refresh(snapshot)
-    
+
     assert snapshot.id is not None
     assert snapshot.snapshot_date == date(2026, 7, 16)
     assert snapshot.snapshot_type == "daily"
@@ -51,7 +51,7 @@ async def test_worker_run_creation(db: AsyncSession):
     db.add(run)
     await db.commit()
     await db.refresh(run)
-    
+
     assert run.id is not None
     assert run.worker_name == "repo_sync"
     assert run.status == "completed"
@@ -70,7 +70,7 @@ async def test_enriched_github_user(db: AsyncSession):
     db.add(user)
     await db.commit()
     await db.refresh(user)
-    
+
     assert user.followers == 100
     assert user.following == 50
     assert user.organizations == ["org1", "org2"]
@@ -92,7 +92,7 @@ async def test_enriched_repository(db: AsyncSession):
     db.add(repo)
     await db.commit()
     await db.refresh(repo)
-    
+
     assert repo.license == "MIT"
     assert repo.archived is True
     assert repo.size == 1024

@@ -1,12 +1,12 @@
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.core.database import engine
-from app.models.github import Repository, WorkerRun, GitHubEvent
+from app.models.github import WorkerRun
 from app.services.push_event_service import PushEventService
 
 logger = logging.getLogger(__name__)

@@ -31,7 +31,9 @@ class AITelemetry:
     def record_usage(provider: str, model: str, prompt_tokens: int, completion_tokens: int, duration_seconds: float):
         if AI_TOKEN_USAGE_COUNTER:
             AI_TOKEN_USAGE_COUNTER.labels(provider=provider, model=model, token_type="prompt").inc(prompt_tokens)
-            AI_TOKEN_USAGE_COUNTER.labels(provider=provider, model=model, token_type="completion").inc(completion_tokens)
+            AI_TOKEN_USAGE_COUNTER.labels(provider=provider, model=model, token_type="completion").inc(
+                completion_tokens
+            )
 
             # Estimate cost based on gpt-4o standard pricing ($2.50 / 1M prompt, $10.00 / 1M completion)
             est_cost = (prompt_tokens * 2.50 / 1_000_000) + (completion_tokens * 10.00 / 1_000_000)

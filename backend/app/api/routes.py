@@ -3,19 +3,18 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.api import (  # noqa: E402  # noqa: E402  # noqa: E402
+    activity,
+    analytics,
     auth,
     events,
     geospatial,
     health,
     india,
     location_intelligence,
+    observability,
     repositories,
     sync,
     v2,
-    websocket_endpoints,
-    analytics,
-    observability,
-    activity,
 )
 
 api_router = APIRouter()

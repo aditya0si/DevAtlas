@@ -8,9 +8,10 @@ Create Date: 2026-07-24 00:00:00.000000
 """
 from typing import Sequence, Union
 
-from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
+
+from alembic import op
 
 revision: str = 'sprint11_activity_intelligence'
 down_revision: Union[str, None] = '0005_pgvector_hnsw'
@@ -28,7 +29,10 @@ def upgrade() -> None:
     op.add_column('github_events', sa.Column('city', sa.String(length=255), nullable=True))
     op.add_column('github_events', sa.Column('domain', sa.String(length=100), nullable=True))
     op.add_column('github_events', sa.Column('language', sa.String(length=100), nullable=True))
-    op.add_column('github_events', sa.Column('enrichment_status', sa.String(length=20), nullable=False, server_default='pending'))
+    op.add_column(
+        'github_events',
+        sa.Column('enrichment_status', sa.String(length=20), nullable=False, server_default='pending'),
+    )
     op.add_column('github_events', sa.Column('enriched_at', sa.DateTime(timezone=True), nullable=True))
     op.create_index(op.f('ix_github_events_state'), 'github_events', ['state'], unique=False)
     op.create_index(op.f('ix_github_events_city'), 'github_events', ['city'], unique=False)
@@ -49,7 +53,12 @@ def upgrade() -> None:
         sa.UniqueConstraint('aggregation_date', 'dimension', 'dimension_key', name='uq_daily_agg_date_dim_key'),
     )
     op.create_index('ix_daily_agg_date_dim', 'daily_aggregations', ['aggregation_date', 'dimension'], unique=False)
-    op.create_index(op.f('ix_daily_aggregations_aggregation_date'), 'daily_aggregations', ['aggregation_date'], unique=False)
+    op.create_index(
+        op.f('ix_daily_aggregations_aggregation_date'),
+        'daily_aggregations',
+        ['aggregation_date'],
+        unique=False,
+    )
 
     # 4. Create hourly_aggregations table
     op.create_table('hourly_aggregations',
@@ -63,7 +72,12 @@ def upgrade() -> None:
         sa.UniqueConstraint('aggregation_hour', 'dimension', 'dimension_key', name='uq_hourly_agg_hour_dim_key'),
     )
     op.create_index('ix_hourly_agg_hour_dim', 'hourly_aggregations', ['aggregation_hour', 'dimension'], unique=False)
-    op.create_index(op.f('ix_hourly_aggregations_aggregation_hour'), 'hourly_aggregations', ['aggregation_hour'], unique=False)
+    op.create_index(
+        op.f('ix_hourly_aggregations_aggregation_hour'),
+        'hourly_aggregations',
+        ['aggregation_hour'],
+        unique=False,
+    )
 
     # 5. Create activity_scores table
     op.create_table('activity_scores',
@@ -81,7 +95,12 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint('id'),
         sa.UniqueConstraint('entity_type', 'entity_key', 'period_start', 'period_end', name='uq_activity_score'),
     )
-    op.create_index('ix_activity_scores_entity_period', 'activity_scores', ['entity_type', 'period_start', 'period_end'], unique=False)
+    op.create_index(
+        'ix_activity_scores_entity_period',
+        'activity_scores',
+        ['entity_type', 'period_start', 'period_end'],
+        unique=False,
+    )
     op.create_index(op.f('ix_activity_scores_entity_type'), 'activity_scores', ['entity_type'], unique=False)
     op.create_index(op.f('ix_activity_scores_activity_score'), 'activity_scores', ['activity_score'], unique=False)
 
@@ -104,7 +123,12 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint('id'),
         sa.UniqueConstraint('entity_type', 'entity_key', 'period_start', 'period_end', name='uq_ecosystem_score'),
     )
-    op.create_index('ix_ecosystem_scores_entity_period', 'ecosystem_scores', ['entity_type', 'period_start', 'period_end'], unique=False)
+    op.create_index(
+        'ix_ecosystem_scores_entity_period',
+        'ecosystem_scores',
+        ['entity_type', 'period_start', 'period_end'],
+        unique=False,
+    )
     op.create_index(op.f('ix_ecosystem_scores_entity_type'), 'ecosystem_scores', ['entity_type'], unique=False)
     op.create_index(op.f('ix_ecosystem_scores_ecosystem_score'), 'ecosystem_scores', ['ecosystem_score'], unique=False)
 

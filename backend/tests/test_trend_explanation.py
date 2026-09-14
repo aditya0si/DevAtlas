@@ -1,9 +1,10 @@
 """Tests for Trend Explanation Service and Comparison features."""
 
 import json
-import pytest
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
+
+import pytest
 
 
 class TestTrendExplanationService:
@@ -58,7 +59,7 @@ class TestTrendExplanationService:
 
     def test_trend_explanation_model(self):
         """Test TrendExplanation model validation."""
-        from app.services.trend_explanation_service import TrendExplanation, EntityType
+        from app.services.trend_explanation_service import EntityType, TrendExplanation
 
         explanation = TrendExplanation(
             summary="AI repository growth increased significantly.",
@@ -172,7 +173,11 @@ class TestTrendExplanationService:
         """Provider text may wrap JSON in code fences/prose; extraction must cope."""
         from app.services.trend_explanation_service import TrendExplanationService
 
-        text = 'Here is the result:\n```json\n{"summary": "Growth driven by AI", "confidence_score": 0.5}\n```\nThat is all.'
+        text = (
+            'Here is the result:\n```json\n'
+            '{"summary": "Growth driven by AI", "confidence_score": 0.5}\n'
+            '```\nThat is all.'
+        )
         data = TrendExplanationService._extract_json(text)
         assert data["summary"] == "Growth driven by AI"
         assert data["confidence_score"] == 0.5
@@ -191,7 +196,12 @@ class TestTrendExplanationService:
         valid_json = json.dumps({
             "summary": "Growth driven by AI framework adoption.",
             "key_drivers": [
-                {"factor": "AI frameworks", "impact": "high", "description": "More AI repos", "evidence": ["150 new repos"]}
+                {
+                    "factor": "AI frameworks",
+                    "impact": "high",
+                    "description": "More AI repos",
+                    "evidence": ["150 new repos"],
+                }
             ],
             "unusual_observations": [],
             "notable_changes": ["FastAPI adoption"],
@@ -317,7 +327,11 @@ class TestIndiaSchemasExtensions:
 
     def test_trend_explanation_response_schema(self):
         """Test TrendExplanationResponse schema."""
-        from app.schemas.india import TrendExplanationResponse, TrendDriverSchema, UnusualObservationSchema
+        from app.schemas.india import (
+            TrendDriverSchema,
+            TrendExplanationResponse,
+            UnusualObservationSchema,
+        )
 
         response = TrendExplanationResponse(
             summary="Test summary",
@@ -351,10 +365,10 @@ class TestIndiaSchemasExtensions:
     def test_state_comparison_response_schema(self):
         """Test StateComparisonResponse schema."""
         from app.schemas.india import (
-            StateComparisonResponse,
-            StateComparisonDataSchema,
-            ComparisonSummarySchema,
             ComparisonInsightSchema,
+            ComparisonSummarySchema,
+            StateComparisonDataSchema,
+            StateComparisonResponse,
         )
 
         response = StateComparisonResponse(

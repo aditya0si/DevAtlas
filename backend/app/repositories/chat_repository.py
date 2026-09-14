@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models.chat import ChatSession, ChatMessage
+from app.models.chat import ChatMessage, ChatSession
 
 
 class ChatRepository:

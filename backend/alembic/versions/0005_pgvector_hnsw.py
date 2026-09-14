@@ -5,8 +5,8 @@ Revises: b8b9bd0d046a
 Create Date: 2026-07-22 12:00:00.000000
 """
 from typing import Sequence, Union
+
 from alembic import op
-import sqlalchemy as sa
 
 revision: str = '0005_pgvector_hnsw'
 down_revision: Union[str, None] = 'b8b9bd0d046a'
@@ -25,7 +25,8 @@ def upgrade() -> None:
 
     # Create HNSW index for high performance cosine similarity search
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_repositories_embedding_hnsw ON repositories USING hnsw (embedding vector_cosine_ops);"
+        "CREATE INDEX IF NOT EXISTS idx_repositories_embedding_hnsw "
+        "ON repositories USING hnsw (embedding vector_cosine_ops);"
     )
 
 

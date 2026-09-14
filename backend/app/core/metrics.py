@@ -4,7 +4,7 @@ import time
 from typing import Callable
 
 from fastapi import Request, Response
-from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.routing import Match
 
@@ -96,7 +96,7 @@ class MetricsMiddleware(BaseHTTPMiddleware):
         # Skip metrics endpoint itself
         if request.url.path == "/metrics":
             return await call_next(request)
-        
+
         endpoint = request.url.path
         for r in request.app.routes:
             match_result, match_scope = r.matches(request.scope)
@@ -104,10 +104,10 @@ class MetricsMiddleware(BaseHTTPMiddleware):
                 endpoint = getattr(r, "path", endpoint)
                 break
         method = request.method
-        
+
         ACTIVE_REQUESTS.inc()
         start_time = time.time()
-        
+
         status_code = 500
         try:
             response = await call_next(request)
@@ -115,18 +115,18 @@ class MetricsMiddleware(BaseHTTPMiddleware):
         finally:
             ACTIVE_REQUESTS.dec()
             duration = time.time() - start_time
-            
+
             REQUEST_COUNT.labels(
                 method=method,
                 endpoint=endpoint,
                 status_code=status_code,
             ).inc()
-            
+
             REQUEST_LATENCY.labels(
                 method=method,
                 endpoint=endpoint,
             ).observe(duration)
-        
+
         return response
 
 

@@ -7,7 +7,6 @@ import redis.asyncio as aioredis
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.api.routes import api_router
 from app.api.websocket_endpoints import router as websocket_router

@@ -1,7 +1,8 @@
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Any
 
 from app.api.deps import get_db
 from app.models.github import AnalyticsSnapshot
@@ -17,7 +18,7 @@ async def get_analytics_snapshots(
     query = select(AnalyticsSnapshot).order_by(AnalyticsSnapshot.snapshot_date.desc()).limit(limit)
     result = await db.execute(query)
     snapshots = result.scalars().all()
-    
+
     return [
         {
             "id": s.id,
@@ -38,13 +39,13 @@ async def get_latest_snapshot(
     query = select(AnalyticsSnapshot).where(
         AnalyticsSnapshot.snapshot_type == type
     ).order_by(AnalyticsSnapshot.snapshot_date.desc()).limit(1)
-    
+
     result = await db.execute(query)
     snapshot = result.scalar_one_or_none()
-    
+
     if not snapshot:
         raise HTTPException(status_code=404, detail="No snapshot found")
-        
+
     return {
         "id": snapshot.id,
         "snapshot_date": snapshot.snapshot_date.isoformat(),

@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     ollama_model: str = "mistral"
     ollama_embedding_model: str = "nomic-embed-text"
     ollama_embedding_dimensions: int = 768
-    
+
     # Location Intelligence
     location_min_confidence: int = 40
     geocode_rate_limit_seconds: float = 1.1

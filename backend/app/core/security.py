@@ -5,7 +5,8 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from jose import JWTError, jwt
+import jwt
+from jwt.exceptions import InvalidTokenError
 from passlib.context import CryptContext
 from pydantic import BaseModel
 
@@ -53,7 +54,7 @@ def create_refresh_token(subject: str, family_id: Optional[str] = None) -> tuple
     """
     if family_id is None:
         family_id = secrets.token_urlsafe(32)
-    
+
     token_id = secrets.token_urlsafe(32)
     expire = datetime.now(timezone.utc) + timedelta(minutes=settings.refresh_token_expire_minutes)
     payload = {
@@ -80,7 +81,7 @@ def decode_refresh_token(token: str) -> Optional[RefreshTokenData]:
             family=payload.get("family"),
             token_id=payload.get("jti"),
         )
-    except JWTError:
+    except InvalidTokenError:
         return None
 
 
@@ -88,5 +89,5 @@ def decode_access_token(token: str) -> Optional[TokenPayload]:
     try:
         payload = jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
         return TokenPayload(**payload)
-    except JWTError:
+    except InvalidTokenError:
         return None

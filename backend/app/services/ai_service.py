@@ -45,7 +45,7 @@ class GeminiProvider(AIProvider):
     async def classify_repository(self, prompt: str) -> dict[str, Any]:
         if not self.client:
             raise RuntimeError("google-genai not installed or configured")
-            
+
         response = self.client.models.generate_content(
             model='gemini-2.5-flash',
             contents=[prompt],
@@ -60,7 +60,7 @@ class GeminiProvider(AIProvider):
     async def generate_embedding(self, text: str) -> list[float]:
         if not self.client:
             raise RuntimeError("google-genai not installed or configured")
-            
+
         result = self.client.models.embed_content(
             model='text-embedding-004',
             contents=text,
@@ -71,7 +71,10 @@ class GeminiProvider(AIProvider):
         if not self.client:
             yield "Gemini API key is not configured. Returning analysis baseline.\n"
             yield f"Query: {user_prompt}\n"
-            yield "India developer ecosystem shows high growth in AI, Cloud, and Web3 repositories across Karnataka and Telangana."
+            yield (
+                "India developer ecosystem shows high growth in AI, Cloud, and Web3 repositories "
+                "across Karnataka and Telangana."
+            )
             return
 
         combined_prompt = f"{system_prompt}\n\nUser Query: {user_prompt}"
@@ -181,7 +184,7 @@ class OpenAIProvider(AIProvider):
     async def classify_repository(self, prompt: str) -> dict[str, Any]:
         if not self.client:
             raise RuntimeError("openai not installed or configured")
-            
+
         response = await self.client.beta.chat.completions.parse(
             model="gpt-4o",
             messages=[
@@ -196,7 +199,7 @@ class OpenAIProvider(AIProvider):
     async def generate_embedding(self, text: str) -> list[float]:
         if not self.client:
             raise RuntimeError("openai not installed or configured")
-            
+
         response = await self.client.embeddings.create(
             input=text,
             model=settings.embedding_model,
@@ -208,7 +211,10 @@ class OpenAIProvider(AIProvider):
         if not self.client:
             yield "OpenAI API key is not configured. Returning analysis baseline.\n"
             yield f"Query: {user_prompt}\n"
-            yield "India developer ecosystem shows high growth in AI, Cloud, and Web3 repositories across Karnataka and Telangana."
+            yield (
+                "India developer ecosystem shows high growth in AI, Cloud, and Web3 repositories "
+                "across Karnataka and Telangana."
+            )
             return
 
         response = await self.client.chat.completions.create(
@@ -331,7 +337,11 @@ class MockAIProvider(AIProvider):
         return [0.01] * 1536
 
     async def stream_text(self, system_prompt: str, user_prompt: str) -> AsyncGenerator[str, None]:
-        response = f"Analysis for '{user_prompt}': Karnataka (Bengaluru) leads in AI repository density (+32% YoY growth), followed by Telangana (Hyderabad) and Maharashtra (Pune/Mumbai). Key tech trends include PyTorch, Next.js, and Rust adoption."
+        response = (
+            f"Analysis for '{user_prompt}': Karnataka (Bengaluru) leads in AI repository density "
+            "(+32% YoY growth), followed by Telangana (Hyderabad) and Maharashtra (Pune/Mumbai). "
+            "Key tech trends include PyTorch, Next.js, and Rust adoption."
+        )
         for word in response.split():
             yield word + " "
 

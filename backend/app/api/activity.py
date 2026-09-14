@@ -7,12 +7,11 @@ domain statistics, growth metrics, and administrative triggers.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Optional
+from typing import Optional
 
 from arq import ArqRedis
-from arq.connections import RedisSettings
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,8 +19,11 @@ from app.api.deps import get_db
 from app.core.cache import get_cache_service
 from app.core.config import get_settings
 from app.models.github import (
-    GitHubEvent, GitHubUser, Repository, ActivityScore, EcosystemScore,
-    DailyAggregation, HourlyAggregation,
+    ActivityScore,
+    EcosystemScore,
+    GitHubEvent,
+    GitHubUser,
+    Repository,
 )
 from app.schemas.geospatial import GeoJSONFeature, GeoJSONFeatureCollection
 
@@ -816,7 +818,11 @@ async def get_activity_layers() -> dict:
     return {
         "base_layers": [
             {"id": "developer_presence", "name": "Developer Presence", "color": LAYER_COLORS["developer_presence"]},
-            {"id": "development_activity", "name": "Development Activity", "color": LAYER_COLORS["development_activity"]},
+            {
+                "id": "development_activity",
+                "name": "Development Activity",
+                "color": LAYER_COLORS["development_activity"],
+            },
         ],
         "domain_overlays": [
             {"id": k, "name": k.replace("_", " ").title(), "color": v}

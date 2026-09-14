@@ -4,14 +4,14 @@ from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
-from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from app.core.database import engine
-from app.models.github import Repository, GitHubUser
+from app.models.github import GitHubUser, Repository
 from app.repositories.github_repository import GitHubRepository
 from app.services.github_api_client import GitHubAPIClient, RateLimitExceeded
-from app.workers.repo_ingestion_worker import get_sync_state, update_sync_state
 from app.services.location_intelligence_service import LocationIntelligenceService
+from app.workers.repo_ingestion_worker import get_sync_state, update_sync_state
 
 logger = logging.getLogger(__name__)
 
@@ -28,19 +28,19 @@ async def run_incremental_repo_sync(ctx: dict[str, Any]) -> dict[str, Any]:
     """4-hour incremental repo sync job"""
     async_session_factory = async_sessionmaker(engine, expire_on_commit=False)
     client = GitHubAPIClient()
-    
+
     async with async_session_factory() as session:
         repo_repo = GitHubRepository(session)
         sync_state = await get_sync_state(session, "incremental_repo_sync")
-        
+
         since = sync_state.last_sync_at or (datetime.now(timezone.utc) - timedelta(days=1))
         since_str = since.strftime("%Y-%m-%dT%H:%M:%SZ")
         query = f"location:India pushed:>{since_str}"
-        
+
         sync_state.status = "in_progress"
         sync_state.started_at = datetime.now(timezone.utc)
         await update_sync_state(session, sync_state)
-        
+
         processed = 0
         try:
             items_buffer = []
@@ -74,19 +74,19 @@ async def run_incremental_repo_sync(ctx: dict[str, Any]) -> dict[str, Any]:
                 )
                 items_buffer.append(repo)
                 processed += 1
-                
+
                 if len(items_buffer) >= 100:
                     await repo_repo.bulk_upsert_repositories(items_buffer)
                     items_buffer.clear()
-            
+
             if items_buffer:
                 await repo_repo.bulk_upsert_repositories(items_buffer)
-                
+
             sync_state.items_processed += processed
             sync_state.last_sync_at = datetime.now(timezone.utc)
             sync_state.status = "completed"
             await update_sync_state(session, sync_state)
-            
+
             return {"processed": processed, "status": "success"}
         except Exception as e:
             sync_state.status = "failed"
@@ -101,14 +101,14 @@ async def run_event_sync(ctx: dict[str, Any]) -> dict[str, Any]:
     """2-hour event sync with ETags"""
     async_session_factory = async_sessionmaker(engine, expire_on_commit=False)
     client = GitHubAPIClient()
-    
+
     async with async_session_factory() as session:
         recent = datetime.now(timezone.utc) - timedelta(days=7)
         result = await session.execute(
             select(Repository).where(Repository.last_activity_at >= recent).limit(50)
         )
         repos = result.scalars().all()
-        
+
         processed = 0
         try:
             for repo in repos:
@@ -121,7 +121,7 @@ async def run_event_sync(ctx: dict[str, Any]) -> dict[str, Any]:
 async def run_stale_user_refresh(ctx: dict[str, Any]) -> dict[str, Any]:
     """Daily stale user refresh"""
     async_session_factory = async_sessionmaker(engine, expire_on_commit=False)
-    
+
     async with async_session_factory() as session:
         service = LocationIntelligenceService(session)
         stale_date = datetime.now(timezone.utc) - timedelta(days=30)
@@ -131,7 +131,7 @@ async def run_stale_user_refresh(ctx: dict[str, Any]) -> dict[str, Any]:
             ).limit(100)
         )
         logins = result.scalars().all()
-        
+
         processed = 0
         try:
             for login in logins:

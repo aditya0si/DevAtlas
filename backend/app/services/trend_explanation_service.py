@@ -196,7 +196,8 @@ class TrendExplanationService:
     ) -> dict[str, Any]:
         """Gather supporting context for trend explanation."""
         from sqlalchemy import func, select
-        from app.models.github import Repository, GitHubEvent
+
+        from app.models.github import Repository
 
         context: dict[str, Any] = {
             "repository_categories": [],
@@ -372,7 +373,7 @@ Your explanations should:
         creation_rate = context.get("creation_rate", 0)
 
         categories_str = ", ".join([f"{c['domain']} ({c['count']})" for c in categories[:5]]) or "None"
-        languages_str = ", ".join([f"{l['language']} ({l['count']})" for l in languages[:5]]) or "None"
+        languages_str = ", ".join([f"{lang['language']} ({lang['count']})" for lang in languages[:5]]) or "None"
         orgs_str = ", ".join([f"{o['organization']} ({o['count']})" for o in orgs[:5]]) or "None"
 
         return f"""Explain WHY the {metric_name} for {entity_name} changed by {pct_change:.1f}% ({direction.value}).
@@ -420,7 +421,10 @@ Focus on explaining WHY this happened, not just WHAT happened."""
         if direction == TrendDirection.UP:
             summary = f"{entity_name} saw a {pct_change:.1f}% increase in {metric_name} over the past {time_range}."
         elif direction == TrendDirection.DOWN:
-            summary = f"{entity_name} experienced a {abs(pct_change):.1f}% decrease in {metric_name} over the past {time_range}."
+            summary = (
+                f"{entity_name} experienced a {abs(pct_change):.1f}% decrease in {metric_name} "
+                f"over the past {time_range}."
+            )
         else:
             summary = f"{entity_name}'s {metric_name} remained stable over the past {time_range}."
 
@@ -534,7 +538,8 @@ Focus on explaining WHY this happened, not just WHAT happened."""
         year-over-year instead of month-over-month.
         """
         from sqlalchemy import func, select
-        from app.models.github import Repository, GitHubEvent
+
+        from app.models.github import GitHubEvent, Repository
 
         now = datetime.now(timezone.utc)
         month_ago = now - timedelta(days=30)
@@ -723,7 +728,7 @@ Provide data-driven comparisons that:
 - Healthcare Repos: {comparison.healthcare_repos_a}
 - Avg Stars: {comparison.avg_stars_a:.1f}
 - Innovation Score: {comparison.innovation_score_a:.1f}
-- Top Languages: {', '.join([l['language'] for l in comparison.top_languages_a[:3]])}
+- Top Languages: {', '.join([lang['language'] for lang in comparison.top_languages_a[:3]])}
 - Top Organizations: {', '.join(comparison.top_organizations_a[:3])}
 
 {comparison.state_b}:
@@ -735,7 +740,7 @@ Provide data-driven comparisons that:
 - Healthcare Repos: {comparison.healthcare_repos_b}
 - Avg Stars: {comparison.avg_stars_b:.1f}
 - Innovation Score: {comparison.innovation_score_b:.1f}
-- Top Languages: {', '.join([l['language'] for l in comparison.top_languages_b[:3]])}
+- Top Languages: {', '.join([lang['language'] for lang in comparison.top_languages_b[:3]])}
 - Top Organizations: {', '.join(comparison.top_organizations_b[:3])}
 
 Provide a JSON response with:
@@ -787,8 +792,14 @@ Provide a JSON response with:
             summary=summary,
             winner=winner,
             score_difference=abs(score_a - score_b),
-            strengths_a=[f"{comparison.repository_count_a} repositories", f"{comparison.developer_activity_a} active developers"],
-            strengths_b=[f"{comparison.repository_count_b} repositories", f"{comparison.developer_activity_b} active developers"],
+            strengths_a=[
+                f"{comparison.repository_count_a} repositories",
+                f"{comparison.developer_activity_a} active developers",
+            ],
+            strengths_b=[
+                f"{comparison.repository_count_b} repositories",
+                f"{comparison.developer_activity_b} active developers",
+            ],
             weaknesses_a=["Growth rate below potential"],
             weaknesses_b=["Growth rate below potential"],
             opportunities=["Cross-state collaboration", "Shared technology栈"],
@@ -807,7 +818,11 @@ Provide a JSON response with:
         if comparison.repository_count_a > 0 or comparison.repository_count_b > 0:
             max_repo = max(comparison.repository_count_a, comparison.repository_count_b)
             diff = abs(comparison.repository_count_a - comparison.repository_count_b) / max_repo * 100
-            winner = comparison.state_a if comparison.repository_count_a > comparison.repository_count_b else comparison.state_b
+            winner = (
+                comparison.state_a
+                if comparison.repository_count_a > comparison.repository_count_b
+                else comparison.state_b
+            )
             insights.append(ComparisonInsight(
                 insight_type="dominance",
                 metric="repository_count",
@@ -830,7 +845,10 @@ Provide a JSON response with:
                 entity_a_value=comparison.growth_rate_a,
                 entity_b_value=comparison.growth_rate_b,
                 difference_percent=diff,
-                insight_text=f"{faster} is growing faster with {max(comparison.growth_rate_a, comparison.growth_rate_b):.1f}% monthly growth",
+                insight_text=(
+                    f"{faster} is growing faster with "
+                    f"{max(comparison.growth_rate_a, comparison.growth_rate_b):.1f}% monthly growth"
+                ),
                 confidence="high",
             ))
 
@@ -843,21 +861,29 @@ Provide a JSON response with:
                 winner=leader,
                 entity_a_value=float(comparison.ai_repos_a),
                 entity_b_value=float(comparison.ai_repos_b),
-                difference_percent=abs(comparison.ai_repos_a - comparison.ai_repos_b) / max(comparison.ai_repos_a, comparison.ai_repos_b, 1) * 100,
+                difference_percent=abs(comparison.ai_repos_a - comparison.ai_repos_b)
+                / max(comparison.ai_repos_a, comparison.ai_repos_b, 1)
+                * 100,
                 insight_text=f"{leader} has more AI/ML projects, indicating stronger AI ecosystem maturity",
                 confidence="medium",
             ))
 
         # Cybersecurity comparison
         if comparison.cybersecurity_repos_a > 0 or comparison.cybersecurity_repos_b > 0:
-            leader = comparison.state_a if comparison.cybersecurity_repos_a > comparison.cybersecurity_repos_b else comparison.state_b
+            leader = (
+                comparison.state_a
+                if comparison.cybersecurity_repos_a > comparison.cybersecurity_repos_b
+                else comparison.state_b
+            )
             insights.append(ComparisonInsight(
                 insight_type="emerging",
                 metric="cybersecurity_projects",
                 winner=leader,
                 entity_a_value=float(comparison.cybersecurity_repos_a),
                 entity_b_value=float(comparison.cybersecurity_repos_b),
-                difference_percent=abs(comparison.cybersecurity_repos_a - comparison.cybersecurity_repos_b) / max(comparison.cybersecurity_repos_a, comparison.cybersecurity_repos_b, 1) * 100,
+                difference_percent=abs(comparison.cybersecurity_repos_a - comparison.cybersecurity_repos_b)
+                / max(comparison.cybersecurity_repos_a, comparison.cybersecurity_repos_b, 1)
+                * 100,
                 insight_text=f"{leader} leads in cybersecurity projects",
                 confidence="medium",
             ))

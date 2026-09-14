@@ -1,8 +1,9 @@
 """Tests for the India Intelligence API endpoints."""
 
-import pytest
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
+
+import pytest
 
 
 class TestInsightService:
@@ -74,7 +75,6 @@ class TestInsightService:
         ``for query in (...)`` loop that rebound a local variable, so the year
         bounds were silently discarded and the growth metrics ignored ``year``.
         """
-        from unittest.mock import AsyncMock, patch
 
         from app.services.insight_service import InsightService
 
@@ -126,7 +126,6 @@ class TestInsightService:
     @pytest.mark.asyncio
     async def test_generate_ai_summary_routes_through_provider(self):
         """AI summaries flow through the provider chain (not a direct OpenAI call)."""
-        from unittest.mock import AsyncMock, patch
 
         from app.services.insight_service import IndiaEcosystemStats, InsightService
 
@@ -475,7 +474,7 @@ class TestIndiaAPIRoutes:
         resp_2024 = await client.get("/api/v1/india/analytics/graphs?year=2024&time_range=year")
         assert resp_2024.status_code == 200
         data_2024 = resp_2024.json()
-        languages_2024 = {l["language"]: l["count"] for l in data_2024["language_popularity"]}
+        languages_2024 = {lang["language"]: lang["count"] for lang in data_2024["language_popularity"]}
         assert languages_2024.get("Python", 0) >= 1
         assert "Go" not in languages_2024
         domains_2024 = {d["domain"]: d["count"] for d in data_2024["top_domains"]}
@@ -488,7 +487,7 @@ class TestIndiaAPIRoutes:
         resp_2025 = await client.get("/api/v1/india/analytics/graphs?year=2025&time_range=year")
         assert resp_2025.status_code == 200
         data_2025 = resp_2025.json()
-        languages_2025 = {l["language"]: l["count"] for l in data_2025["language_popularity"]}
+        languages_2025 = {lang["language"]: lang["count"] for lang in data_2025["language_popularity"]}
         assert languages_2025.get("Go", 0) >= 1
         assert "Python" not in languages_2025
         domains_2025 = {d["domain"]: d["count"] for d in data_2025["top_domains"]}
@@ -631,7 +630,13 @@ class TestIndiaAPIRoutes:
         """Top states must come from real GitHubUser.state, not owner_login."""
         from app.models.github import GitHubUser, Repository
 
-        owner = GitHubUser(login="karnataka-owner", github_user_id=7001, type="User", state="Karnataka", normalized_location="Bengaluru")
+        owner = GitHubUser(
+            login="karnataka-owner",
+            github_user_id=7001,
+            type="User",
+            state="Karnataka",
+            normalized_location="Bengaluru",
+        )
         repo = Repository(
             github_id=7002,
             name="bangalore-app",

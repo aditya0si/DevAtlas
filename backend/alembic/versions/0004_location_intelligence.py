@@ -5,10 +5,10 @@ Revises: 0003
 Create Date: 2026-07-16 15:10:00.000000
 
 """
-from alembic import op
 import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
 from geoalchemy2 import Geometry
+
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = '0004_location_intelligence'
@@ -52,10 +52,14 @@ def upgrade() -> None:
         sa.Column('confidence_score', sa.Integer(), nullable=True),
         sa.Column('location_source', sa.String(length=100), nullable=True),
         sa.Column('last_verified', sa.DateTime(timezone=True), nullable=True),
-        sa.Column('geom', Geometry(geometry_type='POINT', srid=4326, from_text='ST_GeomFromEWKT', name='geometry'), nullable=True),
+        sa.Column(
+            'geom',
+            Geometry(geometry_type='POINT', srid=4326, from_text='ST_GeomFromEWKT', name='geometry'),
+            nullable=True,
+        ),
         sa.PrimaryKeyConstraint('login')
     )
-    
+
     op.create_index(op.f('ix_github_users_last_verified'), 'github_users', ['last_verified'], unique=False)
     op.create_index(op.f('ix_github_users_normalized_location'), 'github_users', ['normalized_location'], unique=False)
     op.create_index('idx_github_users_geom', 'github_users', ['geom'], unique=False, postgresql_using='gist')
@@ -63,7 +67,14 @@ def upgrade() -> None:
     # 3. Add github_user_login to repositories
     op.add_column('repositories', sa.Column('github_user_login', sa.String(length=255), nullable=True))
     op.create_index(op.f('ix_repositories_github_user_login'), 'repositories', ['github_user_login'], unique=False)
-    op.create_foreign_key('fk_repo_github_user', 'repositories', 'github_users', ['github_user_login'], ['login'], ondelete='SET NULL')
+    op.create_foreign_key(
+        'fk_repo_github_user',
+        'repositories',
+        'github_users',
+        ['github_user_login'],
+        ['login'],
+        ondelete='SET NULL',
+    )
 
 
 def downgrade() -> None:

@@ -17,7 +17,7 @@ Deprecation timeline for v1:
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Query, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -51,7 +51,6 @@ class CursorParams:
 def encode_cursor(created_at: str, id: str) -> str:
     """Encode a cursor from timestamp and ID."""
     import base64
-    import json
     data = f"{created_at}:{id}"
     return base64.urlsafe_b64encode(data.encode()).decode()
 
@@ -59,7 +58,6 @@ def encode_cursor(created_at: str, id: str) -> str:
 def decode_cursor(cursor: str) -> tuple[str, str]:
     """Decode a cursor to timestamp and ID."""
     import base64
-    import json
     data = base64.urlsafe_b64decode(cursor.encode()).decode()
     parts = data.split(":", 1)
     return parts[0], parts[1]
@@ -233,11 +231,3 @@ async def health_check_v2(db: AsyncSession = Depends(get_db)) -> HealthResponse:
         service=settings.app_name,
         version="2.0.0",
     )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Import annotations needed
-# ─────────────────────────────────────────────────────────────────────────────
-from typing import Annotated
-from app.schemas.github import GitHubEventResponse
-from app.schemas.health import HealthResponse

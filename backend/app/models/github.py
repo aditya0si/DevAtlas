@@ -5,8 +5,22 @@ from typing import Any, Optional
 from uuid import uuid4
 
 from geoalchemy2 import Geometry
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, Date, Float, Boolean, JSON
-from sqlalchemy.dialects.postgresql import JSONB, UUID, FLOAT
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy.dialects.postgresql import FLOAT, JSONB, UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.core.database import Base
 
 JSONType = JSON().with_variant(JSONB, "postgresql")
 GeomType = String().with_variant(Geometry(geometry_type="POINT", srid=4326), "postgresql")
@@ -16,9 +30,6 @@ try:
     VectorType = Vector(1536)
 except ImportError:
     VectorType = JSONType
-from sqlalchemy.orm import Mapped, mapped_column, relationship
-
-from app.core.database import Base  # noqa: E402  # noqa: E402  # noqa: E402
 
 
 class Repository(Base):
@@ -30,9 +41,9 @@ class Repository(Base):
     full_name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     owner_login: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     github_user_login: Mapped[Optional[str]] = mapped_column(
-        String(255), 
-        ForeignKey("github_users.login", ondelete="SET NULL"), 
-        nullable=True, 
+        String(255),
+        ForeignKey("github_users.login", ondelete="SET NULL"),
+        nullable=True,
         index=True
     )
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -60,7 +71,9 @@ class Repository(Base):
     classification: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONType, nullable=True)
     embedding: Mapped[Optional[list[float]]] = mapped_column(VectorType, nullable=True)
     geom: Mapped[Optional[Any]] = mapped_column(GeomType, nullable=True)
-    ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
     classification_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     events: Mapped[list["GitHubEvent"]] = relationship(
@@ -89,7 +102,9 @@ class GitHubEvent(Base):
     payload: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONType, nullable=True)
     public: Mapped[bool] = mapped_column(default=True, nullable=False)
     created_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
-    ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
 
     # Enrichment fields (resolved from actor/repo location, NOT duplicated coordinates)
     state: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
@@ -153,7 +168,7 @@ class GitHubUser(Base):
     location_source: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     last_verified: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     geom: Mapped[Optional[Geometry]] = mapped_column(Geometry(geometry_type="POINT", srid=4326), nullable=True)
-    
+
     repositories: Mapped[list["Repository"]] = relationship(
         "Repository",
         back_populates="owner",
@@ -172,13 +187,15 @@ class LocationCache(Base):
     country: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     timezone: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     confidence_score: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    cached_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    cached_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
 
 Index("ix_github_users_country", GitHubUser.country)
 
 class SyncState(Base):
     __tablename__ = "sync_state"
-    
+
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
     sync_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     last_github_id: Mapped[int] = mapped_column(Integer, default=0)
@@ -190,17 +207,21 @@ class SyncState(Base):
     status: Mapped[str] = mapped_column(String(50), default="idle")
     state_metadata: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONType, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
 
 class AnalyticsSnapshot(Base):
     __tablename__ = "analytics_snapshots"
-    
+
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
     snapshot_date: Mapped[datetime] = mapped_column(Date, nullable=False)
     snapshot_type: Mapped[str] = mapped_column(String(50), nullable=False)
     metrics: Mapped[dict[str, Any]] = mapped_column(JSONType, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    
+
     __table_args__ = (
         UniqueConstraint("snapshot_date", "snapshot_type", name="uq_snapshot_date_type"),
         Index("ix_analytics_snapshots_date_type", "snapshot_date", "snapshot_type"),
@@ -208,7 +229,7 @@ class AnalyticsSnapshot(Base):
 
 class WorkerRun(Base):
     __tablename__ = "worker_runs"
-    
+
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
     worker_name: Mapped[str] = mapped_column(String(100), nullable=False)
     status: Mapped[str] = mapped_column(String(50), nullable=False)
@@ -308,7 +329,9 @@ class DataQualityMetric(Base):
     metric_name: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     metric_value: Mapped[float] = mapped_column(FLOAT, default=0.0)
     metric_metadata: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONType, nullable=True)
-    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True
+    )
 
     __table_args__ = (
         Index("ix_dq_metrics_name_recorded", "metric_name", "recorded_at"),

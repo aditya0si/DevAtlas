@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -79,13 +79,13 @@ class TestEmailVerificationRepository:
     async def test_create_token(self, mock_db):
         """Should create a new verification token."""
         repo = EmailVerificationRepository(mock_db)
-        
+
         token = await repo.create_token(
             user_id="user-123",
             email="test@example.com",
             expires_hours=24,
         )
-        
+
         assert token.user_id == "user-123"
         assert token.email == "test@example.com"
         assert token.token is not None
@@ -97,10 +97,10 @@ class TestEmailVerificationRepository:
     async def test_generate_token_is_unique(self, mock_db):
         """Each generated token should be unique."""
         repo = EmailVerificationRepository(mock_db)
-        
+
         token1 = repo._generate_token()
         token2 = repo._generate_token()
-        
+
         assert token1 != token2
         assert len(token1) > 20
 
@@ -112,26 +112,26 @@ class TestConsoleEmailService:
     async def test_send_email_returns_true(self):
         """Console email service should always succeed."""
         service = ConsoleEmailService()
-        
+
         result = await service.send_email(
             to="test@example.com",
             subject="Test",
             html_body="<p>Test</p>",
             text_body="Test",
         )
-        
+
         assert result is True
 
     @pytest.mark.asyncio
     async def test_send_verification_email_returns_true(self):
         """Should send verification email successfully."""
         service = ConsoleEmailService()
-        
+
         result = await service.send_verification_email(
             email="test@example.com",
             token="test-token-123",
         )
-        
+
         assert result is True
 
 
@@ -141,7 +141,7 @@ class TestSMTPEmailService:
     def test_initializes_with_defaults(self):
         """Should initialize with default values."""
         service = SMTPEmailService()
-        
+
         assert service.host == "localhost"
         assert service.port == 587
         assert service.use_tls is True
@@ -156,7 +156,7 @@ class TestSMTPEmailService:
             use_tls=False,
             from_address="custom@example.com",
         )
-        
+
         assert service.host == "smtp.example.com"
         assert service.port == 465
         assert service.username == "user"
@@ -217,10 +217,10 @@ class TestEmailVerificationFlow:
                 created_at=datetime.now(timezone.utc),
             )
             tokens.append(token)
-        
+
         # All tokens should be valid initially
         assert all(t.is_valid for t in tokens)
-        
+
         # Mark first as used
         tokens[0].used_at = datetime.now(timezone.utc)
         assert tokens[0].is_valid is False

@@ -10,7 +10,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db
-from app.models.github import Repository, GitHubUser, SyncState, WorkerRun
+from app.models.github import GitHubUser, Repository, SyncState, WorkerRun
 
 router = APIRouter()
 
@@ -24,7 +24,7 @@ async def deep_health_check(
 
     # 1. Database connectivity
     try:
-        result = await db.execute(text("SELECT 1"))
+        await db.execute(text("SELECT 1"))
         checks["database"] = {"status": "healthy", "latency_ms": 0}
     except Exception as e:
         checks["database"] = {"status": "unhealthy", "error": str(e)}

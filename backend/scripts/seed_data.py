@@ -19,16 +19,15 @@ import logging
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.core.config import get_settings
 from app.core.database import engine
-from app.models.github import Repository, GitHubUser
+from app.models.github import GitHubUser, Repository
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -36,7 +35,10 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 async_session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
-QUERY = "location:India OR location:Bangalore OR location:Mumbai OR location:Delhi OR location:Pune OR location:Hyderabad OR location:Chennai"
+QUERY = (
+    "location:India OR location:Bangalore OR location:Mumbai OR location:Delhi "
+    "OR location:Pune OR location:Hyderabad OR location:Chennai"
+)
 MIN_STARS = 10
 DEFAULT_LIMIT = 1000
 
@@ -72,8 +74,8 @@ async def _pending_geocode_count(db) -> int:
 
 async def fetch_repositories(limit: int = DEFAULT_LIMIT, min_stars: int = MIN_STARS) -> int:
     """Fetch Indian GitHub repositories via Search API and upsert into DB."""
-    from app.services.github_api_client import GitHubAPIClient
     from app.repositories.github_repository import GitHubRepository
+    from app.services.github_api_client import GitHubAPIClient
 
     client = GitHubAPIClient()
     total = 0
@@ -197,7 +199,10 @@ async def enrich_geocoding(limit: int = 200) -> int:
         logger.info(f"Running location enrichment for up to {limit} users...")
         result = await service.run_batch_enrichment(limit=limit)
         await db.close()
-        logger.info(f"Geocoding complete: {result.processed} processed, {result.enriched} enriched, {result.errors} errors.")
+        logger.info(
+            f"Geocoding complete: {result.processed} processed, {result.enriched} enriched, "
+            f"{result.errors} errors."
+        )
         return result.enriched
 
 

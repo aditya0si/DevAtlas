@@ -5,11 +5,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from uuid import uuid4
 
-from sqlalchemy import select, func, text
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.github import (
-    GitHubEvent, GitHubUser, ActivityScore, EcosystemScore,
+    ActivityScore,
+    EcosystemScore,
+    GitHubEvent,
 )
 
 logger = logging.getLogger(__name__)

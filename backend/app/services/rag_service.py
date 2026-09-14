@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import hashlib
 from typing import Optional
+
 from pydantic import BaseModel
-from sqlalchemy import select, literal, Float
+from sqlalchemy import Float, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.cache import get_cache_service
 from app.models.github import Repository
 from app.services.ai_service import AIServiceFactory
-from app.core.cache import get_cache_service
 
 
 class GroundedCitation(BaseModel):
@@ -78,7 +79,8 @@ class RAGService:
                         f"- Repository: {repo.full_name}\n"
                         f"  Description: {repo.description or 'N/A'}\n"
                         f"  Language: {repo.language or 'N/A'}\n"
-                        f"  Stars: {repo.stargazers_count} | Domain: {(repo.classification or {}).get('domain', 'General')}\n"
+                        f"  Stars: {repo.stargazers_count} | "
+                        f"Domain: {(repo.classification or {}).get('domain', 'General')}\n"
                     )
                     formatted_context_parts.append(context_snippet)
             else:
@@ -94,7 +96,11 @@ class RAGService:
                 "- Context: India developer ecosystem telemetry across Bengaluru, Hyderabad, Mumbai, and Delhi NCR."
             )
 
-        formatted_context = "\n".join(formatted_context_parts) if formatted_context_parts else "No direct repository matches found."
+        formatted_context = (
+            "\n".join(formatted_context_parts)
+            if formatted_context_parts
+            else "No direct repository matches found."
+        )
 
         result = RAGContextResult(
             query=query,

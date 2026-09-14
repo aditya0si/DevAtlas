@@ -1,19 +1,18 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.cache import get_cache_service
 from app.core.config import get_settings
 from app.models.github import GitHubEvent, Repository
 from app.repositories.github_repository import (
     GitHubRepository,  # noqa: E402  # noqa: E402  # noqa: E402  # noqa: E402
 )
-from app.core.cache import get_cache_service
 from app.utils.rate_limiter import GitHubRateLimiter  # noqa: E402
 
 settings = get_settings()
@@ -111,9 +110,8 @@ class GitHubService:
 
     async def fetch_and_store_readme(self, owner: str, repo: str, default_branch: str | None) -> str | None:
         """Fetch README content and store it in repository classification."""
-        branch = default_branch or "main"
         url = f"https://api.github.com/repos/{owner}/{repo}/readme"
-        
+
         try:
             response = await self.rate_limiter.request("GET", url)
             if response.status_code == 200:
@@ -126,7 +124,7 @@ class GitHubService:
                 return readme_content
         except Exception:
             pass
-        
+
         return None
 
     async def fetch_github_user(self, login: str) -> dict[str, Any] | None:
@@ -142,10 +140,10 @@ class GitHubService:
         url = f"https://api.github.com/users/{login}"
         try:
             response = await self.client.get(url, headers=headers)
-            
+
             if response.status_code == 304 and cached:
                 return cached
-                
+
             if response.status_code == 200:
                 data = response.json()
                 result = {
@@ -160,12 +158,12 @@ class GitHubService:
                 etag = response.headers.get("ETag")
                 if etag:
                     result["etag"] = etag
-                    
+
                 await self.cache.set_github_user(login, result)
                 return result
         except Exception as e:
             print(f"Error fetching github user {login}: {e}")
-            
+
         return cached if cached else None
 
     async def close(self) -> None:

@@ -35,19 +35,19 @@ class GitHubAPIClient:
         )
         if self.token:
             self.client.headers["Authorization"] = f"token {self.token}"
-        
+
         self.rate_limit_remaining = 5000
         self.rate_limit_reset = 0
 
     async def _handle_rate_limit(self, response: httpx.Response) -> None:
         remaining = response.headers.get("X-RateLimit-Remaining")
         reset = response.headers.get("X-RateLimit-Reset")
-        
+
         if remaining is not None:
             self.rate_limit_remaining = int(remaining)
         if reset is not None:
             self.rate_limit_reset = int(reset)
-            
+
         if response.status_code in (403, 429) and self.rate_limit_remaining == 0:
             import time
             now = time.time()
@@ -55,7 +55,7 @@ class GitHubAPIClient:
             logger.warning(f"Rate limit exceeded. Waiting {wait_time:.2f} seconds.")
             await asyncio.sleep(wait_time + 1)
             raise RateLimitExceeded("Rate limit exceeded, retrying after backoff.")
-            
+
         if response.status_code in (403, 429):
             # Secondary rate limit (abuse detection)
             retry_after = response.headers.get("Retry-After")
@@ -64,7 +64,7 @@ class GitHubAPIClient:
                 logger.warning(f"Secondary rate limit hit. Waiting {wait_time} seconds.")
                 await asyncio.sleep(wait_time + 1)
                 raise RateLimitExceeded("Secondary rate limit exceeded.")
-                
+
         if response.status_code != 304:
             response.raise_for_status()
 
@@ -77,13 +77,13 @@ class GitHubAPIClient:
         ):
             with attempt:
                 response = await self.client.request(method, url, **kwargs)
-                
+
                 # Check for rate limits and raise RateLimitExceeded if necessary,
                 # which triggers a retry in the AsyncRetrying block.
                 await self._handle_rate_limit(response)
-                
+
                 return response
-        
+
         # This should never be reached due to AsyncRetrying raising the last exception
         raise RuntimeError("Request failed after all retries.")
 
@@ -94,7 +94,7 @@ class GitHubAPIClient:
             response = await self.request("GET", next_url, params=params)
             params = None  # only include params on the first request
             data = response.json()
-            
+
             # If the endpoint returns a dict containing 'items' (like the Search API)
             if isinstance(data, dict) and "items" in data:
                 items = data["items"]
@@ -102,13 +102,15 @@ class GitHubAPIClient:
                 items = data
             else:
                 items = [data]
-                
+
             for item in items:
                 yield item
-                
+
             next_url = response.links.get("next", {}).get("url")
 
-    async def search_repositories(self, query: str, sort: str = "stars", order: str = "desc") -> AsyncGenerator[Dict[str, Any], None]:
+    async def search_repositories(
+        self, query: str, sort: str = "stars", order: str = "desc"
+    ) -> AsyncGenerator[Dict[str, Any], None]:
         """Search for repositories matching the query."""
         url = "https://api.github.com/search/repositories"
         params = {"q": query, "sort": sort, "order": order, "per_page": 100}
@@ -120,15 +122,15 @@ class GitHubAPIClient:
         headers = {}
         if etag:
             headers["If-None-Match"] = etag
-            
+
         try:
             # We bypass `self.request` for the 304 Not Modified case because it would raise an HTTPStatusError
             response = await self.client.get(f"https://api.github.com/users/{username}", headers=headers)
             await self._handle_rate_limit(response)
-            
+
             if response.status_code == 304:
                 return {"_status": 304}
-                
+
             data = response.json()
             data["_etag"] = response.headers.get("ETag")
             data["_status"] = 200

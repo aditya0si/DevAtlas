@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from uuid import UUID
 
-from fastapi import WebSocket, WebSocketDisconnect
+from fastapi import WebSocket
 
 
 class ConnectionManager:

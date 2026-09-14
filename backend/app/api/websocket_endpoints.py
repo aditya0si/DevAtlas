@@ -4,13 +4,11 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel
 
-from app.api.deps import get_current_user
 from app.api.websocket import WebSocketMessage, manager
 from app.models.user import User
-
 
 router = APIRouter(prefix="/ws", tags=["websocket"])
 

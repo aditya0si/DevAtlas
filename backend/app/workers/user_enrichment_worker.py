@@ -15,27 +15,27 @@ async def run_user_enrichment(ctx: dict[str, Any]) -> dict[str, Any]:
     Enriches GitHub users with full profiles and geocodes their locations.
     """
     async_session_factory = async_sessionmaker(engine, expire_on_commit=False)
-    
+
     async with async_session_factory() as session:
         service = LocationIntelligenceService(session)
         sync_state = await get_sync_state(session, "user_enrichment")
-        
+
         sync_state.status = "in_progress"
         sync_state.started_at = datetime.now(timezone.utc)
         await update_sync_state(session, sync_state)
-        
+
         try:
             # We fetch up to 200 users at a time due to GitHub rate limits
             result = await service.run_batch_enrichment(limit=200)
-            
+
             sync_state.items_processed += result.processed
             sync_state.total_processed += result.processed
             sync_state.total_errors += result.errors
-            
+
             sync_state.status = "completed"
             sync_state.completed_at = datetime.now(timezone.utc)
             await update_sync_state(session, sync_state)
-            
+
             return {
                 "status": "success",
                 "processed": result.processed,

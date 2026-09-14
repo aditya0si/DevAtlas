@@ -1,21 +1,18 @@
 from __future__ import annotations
 
-import asyncio
 import os
 from collections.abc import AsyncGenerator
 
-import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import NullPool
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base, get_db
 from app.core.security import hash_password
 from app.main import app
-from app.models import *
-
-from sqlalchemy import NullPool, text
+from app.models import User
 
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL",

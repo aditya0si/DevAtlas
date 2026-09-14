@@ -20,7 +20,7 @@ class TestRepositoryClassification:
             maturity="growing",
             community_health="active",
         )
-        
+
         assert classification.primary_language == "Python"
         assert classification.domain == "web"
         assert classification.maturity == "growing"
@@ -35,7 +35,7 @@ class TestRepositoryClassification:
             maturity="mature",
             community_health="moderate",
         )
-        
+
         assert classification.primary_language == "Go"
         assert len(classification.secondary_languages) == 0
 
@@ -52,7 +52,7 @@ class TestClassificationService:
             readme="This is a README",
             languages={"Python": 1000, "JavaScript": 200},
         )
-        
+
         assert "my-repo" in prompt
         assert "web framework" in prompt
         assert "Python" in prompt
@@ -67,7 +67,7 @@ class TestClassificationService:
             readme=None,
             languages=None,
         )
-        
+
         assert "minimal-repo" in prompt
         assert "N/A" in prompt
         assert "unknown" in prompt

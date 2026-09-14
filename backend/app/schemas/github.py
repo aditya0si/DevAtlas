@@ -105,5 +105,5 @@ class GitHubUserResponse(BaseModel):
     confidence_score: Optional[int] = None
     location_source: Optional[str] = None
     last_verified: Optional[datetime] = None
-    
+
     model_config = {"from_attributes": True}

@@ -4,7 +4,7 @@ import time
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from app.core.metrics import AI_REQUESTS, AI_TOKENS, AI_COST, AI_LATENCY
+from app.core.metrics import AI_COST, AI_LATENCY, AI_REQUESTS, AI_TOKENS
 
 # Approximate cost per 1M tokens in USD cents
 _MODEL_PRICING: dict[str, dict[str, float]] = {
@@ -26,7 +26,14 @@ class AICostTracker:
         return int(input_cost + output_cost)
 
     @staticmethod
-    def record(provider: str, model: str, operation: str, input_tokens: int = 0, output_tokens: int = 0, duration: float = 0) -> None:
+    def record(
+        provider: str,
+        model: str,
+        operation: str,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        duration: float = 0,
+    ) -> None:
         cost_cents = AICostTracker.estimate_cost(provider, model, operation, input_tokens, output_tokens)
         AI_REQUESTS.labels(provider=provider, operation=operation, model=model).inc()
         AI_TOKENS.labels(provider=provider, operation=operation, model=model).inc(input_tokens + output_tokens)

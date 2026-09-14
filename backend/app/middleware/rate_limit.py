@@ -33,7 +33,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         client_ip = request.client.host if request.client else "unknown"
         key = f"rate_limit:{client_ip}"
-        
+
         allowed = False
         try:
             allowed = not await self._check_rate_limit_redis(key)
@@ -43,7 +43,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         if allowed:
             return await call_next(request)
-        
+
         raise HTTPException(
             status_code=429,
             detail=f"Too many requests. Limit: {self.requests} per {self.window} seconds"
@@ -53,15 +53,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         """Returns True if rate limited."""
         now = time.time()
         window_start = now - self.window
-        
+
         redis_client = await get_redis()
-        
+
         async with redis_client.pipeline(transaction=True) as pipe:
             pipe.zremrangebyscore(key, 0, window_start)
             pipe.zcard(key)
             pipe.zadd(key, {str(now): now})
             pipe.expire(key, self.window + 1)
             results = await pipe.execute()
-        
+
         request_count = results[1]
         return request_count >= self.requests

@@ -7,8 +7,6 @@ Documents migration path to v2.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 

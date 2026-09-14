@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db
+from app.models.github import Repository
 from app.schemas.india import (
     AnalyticsGraphResponse,
     DiscoveryResponse,
@@ -131,6 +132,7 @@ async def get_state_dashboard(
     and developer activity via enriched ``GitHubEvent`` state/city fields.
     """
     from sqlalchemy import or_
+
     from app.models.github import GitHubEvent, GitHubUser, Repository
 
     # Match either the state name or the city name (e.g. "Karnataka" or "Bengaluru").
@@ -289,6 +291,7 @@ async def get_seed_status(
 ) -> dict:
     """Check if the database has been seeded with demo data."""
     from sqlalchemy import func
+
     from app.models.github import Repository
 
     result = await db.execute(select(func.count(Repository.id)))
@@ -622,7 +625,9 @@ async def get_discovery(
         .order_by(func.count(Repository.id).desc())
         .limit(5)
     )
-    fastest_growing_domains = [{"domain": row.domain or "unknown", "count": row.count} for row in domain_result.fetchall()]
+    fastest_growing_domains = [
+        {"domain": row.domain or "unknown", "count": row.count} for row in domain_result.fetchall()
+    ]
 
     return DiscoveryResponse(
         trending_repositories=trending_repositories,
@@ -665,7 +670,7 @@ async def semantic_search(
         if request.domain:
             stmt = stmt.where(Repository.classification.op("->>")("domain").ilike(f"%{request.domain}%"))
         stmt = stmt.order_by(Repository.embedding.cosine_distance(query_embedding)).limit(request.limit)
-        
+
         db_res = await db.execute(stmt)
         rows = db_res.all()
         for repo, similarity in rows:
@@ -734,9 +739,9 @@ async def get_repository_card(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Get AI-generated repository card with summary."""
-    from app.models.github import Repository
-
     import uuid as _uuid
+
+    from app.models.github import Repository
 
     # Repository.id is a UUID column; reject malformed ids before querying.
     try:
@@ -821,7 +826,7 @@ async def explain_trend(
     - time_range: week, month, quarter, year
     - domain: Optional domain filter
     """
-    from app.services.trend_explanation_service import TrendExplanationService, EntityType
+    from app.services.trend_explanation_service import EntityType, TrendExplanationService
 
     try:
         entity_type = EntityType(request.entity_type)
@@ -901,10 +906,11 @@ async def ask_devatlas_stream(
     db: AsyncSession = Depends(get_db),
 ):
     """Stream AI response for Ask DevAtlas Copilot query using SSE with RAG grounded context."""
+    import json
+
+    from app.repositories.chat_repository import ChatRepository
     from app.services.ai_service import AIServiceFactory
     from app.services.rag_service import RAGService
-    from app.repositories.chat_repository import ChatRepository
-    import json
 
     chat_repo = ChatRepository(db)
     session = None
@@ -923,8 +929,10 @@ async def ask_devatlas_stream(
     history_context = _build_history_context(session.messages) if session.messages else ""
 
     system_prompt = (
-        "You are DevAtlas AI, an expert software ecosystem intelligence analyst specializing in Indian developer data.\n"
-        "Ground your answer strictly in the provided repository context below when relevant. Cite specific repository names.\n\n"
+        "You are DevAtlas AI, an expert software ecosystem intelligence analyst specializing in "
+        "Indian developer data.\n"
+        "Ground your answer strictly in the provided repository context below when relevant. "
+        "Cite specific repository names.\n\n"
         f"--- CONVERSATION HISTORY ---\n{history_context}\n------------------------------\n\n"
         f"--- GROUNDED REPOSITORY CONTEXT ---\n{rag_result.formatted_context}\n-----------------------------------"
     )
@@ -964,9 +972,9 @@ async def ask_devatlas(
     db: AsyncSession = Depends(get_db),
 ):
     """Ask DevAtlas Copilot non-streaming endpoint with grounded RAG context and multi-turn support."""
+    from app.repositories.chat_repository import ChatRepository
     from app.services.ai_service import AIServiceFactory
     from app.services.rag_service import RAGService
-    from app.repositories.chat_repository import ChatRepository
 
     query = request.get("query", "")
     if not query:
@@ -989,7 +997,8 @@ async def ask_devatlas(
     history_context = _build_history_context(session.messages) if session.messages else ""
 
     system_prompt = (
-        "You are DevAtlas AI, an expert software ecosystem intelligence analyst specializing in Indian developer data.\n"
+        "You are DevAtlas AI, an expert software ecosystem intelligence analyst specializing in "
+        "Indian developer data.\n"
         "Ground your answer strictly in the provided repository context below when relevant.\n\n"
         f"--- CONVERSATION HISTORY ---\n{history_context}\n------------------------------\n\n"
         f"--- GROUNDED REPOSITORY CONTEXT ---\n{rag_result.formatted_context}\n-----------------------------------"

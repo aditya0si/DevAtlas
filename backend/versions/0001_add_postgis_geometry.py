@@ -19,7 +19,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column("repositories", sa.Column("geom", geoalchemy2.Geometry(geometry_type="POINT", srid=4326), nullable=True))
+    op.add_column(
+        "repositories",
+        sa.Column("geom", geoalchemy2.Geometry(geometry_type="POINT", srid=4326), nullable=True),
+    )
     op.create_index("ix_repositories_geom", "repositories", ["geom"], unique=False, postgresql_using="gist")
 
 

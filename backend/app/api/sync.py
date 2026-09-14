@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any
 
 from arq import ArqRedis
-from arq.connections import RedisSettings
 from fastapi import APIRouter, HTTPException
 
 from app.core.cache import get_cache_service

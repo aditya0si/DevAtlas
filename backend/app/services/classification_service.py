@@ -66,7 +66,14 @@ class ClassificationService:
         # no-key environments stay functional.
         self.provider = AIServiceFactory.get_provider()
 
-    async def classify_repository(self, repository_id: str, repo_name: str, description: str | None, readme: str | None, languages: dict[str, int] | None) -> RepositoryClassification:
+    async def classify_repository(
+        self,
+        repository_id: str,
+        repo_name: str,
+        description: str | None,
+        readme: str | None,
+        languages: dict[str, int] | None,
+    ) -> RepositoryClassification:
         prompt = self._build_prompt(repo_name, description, readme, languages)
         result = await self.provider.classify_repository(prompt)
         return RepositoryClassification.from_provider_result(result)

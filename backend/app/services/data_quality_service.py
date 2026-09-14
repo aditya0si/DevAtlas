@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any, Optional, List
+from typing import Any, Optional
 
-from sqlalchemy import select, func, text
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.github import (
-    GitHubEvent, GitHubUser, Repository, DataQualityMetric, WorkerRun,
+    DataQualityMetric,
+    GitHubEvent,
+    GitHubUser,
+    Repository,
+    WorkerRun,
 )
 
 logger = logging.getLogger(__name__)

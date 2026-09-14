@@ -65,7 +65,7 @@ class LocationNormalizer:
 
         # Basic cleaning
         cleaned = raw_location.lower().strip()
-        
+
         # Remove emojis (basic ascii/alphanumeric keeping)
         cleaned = re.sub(r'[^\w\s,.-]', '', cleaned)
         cleaned = cleaned.strip()
@@ -79,7 +79,11 @@ class LocationNormalizer:
         # Check aliases
         normalized = cls.ALIAS_MAP.get(base_city)
         if normalized:
-            return NormalizedLocation(raw=raw_location, normalized=normalized, confidence_hint=99 if "," in normalized or normalized != "India" else 65)
+            return NormalizedLocation(
+                raw=raw_location,
+                normalized=normalized,
+                confidence_hint=99 if "," in normalized or normalized != "India" else 65,
+            )
 
         # Fallback to Title Case
         normalized = " ".join(word.capitalize() for word in base_city.split())
@@ -93,21 +97,21 @@ class ConfidenceEngine:
     def calculate(cls, geocoded: dict[str, Any]) -> int:
         if not geocoded:
             return 0
-            
+
         address = geocoded.get("address", {})
-        
+
         # Exact city match
         if "city" in address or "town" in address or "village" in address:
             return 99
-            
+
         # Exact state match
         if "state" in address:
             return 90
-            
+
         # Country only
         if "country" in address:
             return 65
-            
+
         return 20
 
 
@@ -150,15 +154,15 @@ class GeocodingService:
             try:
                 response = await self.client.get(url)
                 await asyncio.sleep(getattr(settings, "geocode_rate_limit_seconds", 1.1))  # Respect usage policy
-                
+
                 if response.status_code == 200:
                     data = response.json()
                     if data:
                         first_match = data[0]
                         address = first_match.get("address", {})
-                        
+
                         confidence = ConfidenceEngine.calculate(first_match)
-                        
+
                         result = GeocodedLocation(
                             latitude=float(first_match["lat"]),
                             longitude=float(first_match["lon"]),
@@ -171,17 +175,17 @@ class GeocodingService:
                     else:
                         # Unresolvable location
                         result = GeocodedLocation(
-                            latitude=None, longitude=None, city=None, state=None, 
+                            latitude=None, longitude=None, city=None, state=None,
                             country=None, timezone=None, confidence_score=0
                         )
                 else:
                     result = GeocodedLocation(
-                        latitude=None, longitude=None, city=None, state=None, 
+                        latitude=None, longitude=None, city=None, state=None,
                         country=None, timezone=None, confidence_score=0
                     )
             except Exception:
                 result = GeocodedLocation(
-                    latitude=None, longitude=None, city=None, state=None, 
+                    latitude=None, longitude=None, city=None, state=None,
                     country=None, timezone=None, confidence_score=0
                 )
 
@@ -267,7 +271,7 @@ class LocationIntelligenceService:
         # 4. Geocode if normalized exists
         if norm_result.normalized:
             geo_result = await self.geocoder.geocode(norm_result.normalized)
-            
+
             user.city = geo_result.city
             user.state = geo_result.state
             user.country = geo_result.country
@@ -280,16 +284,16 @@ class LocationIntelligenceService:
             user.location_source = None
 
         user.last_verified = asyncio.get_event_loop().time() # Will be set to utcnow in repository
-        
+
         # 5. Save enriched user
         user = await self.location_repo.upsert_github_user(user.__dict__)
         return user
 
     async def run_batch_enrichment(self, limit: int = 200) -> BatchResult:
         logins = await self.location_repo.get_users_needing_enrichment(limit)
-        
+
         result = BatchResult(processed=0, enriched=0, errors=0)
-        
+
         for login in logins:
             try:
                 user = await self.enrich_repository_owner(login)
@@ -302,7 +306,7 @@ class LocationIntelligenceService:
                 # Log error but continue batch
                 print(f"Error enriching {login}: {e}")
                 result.errors += 1
-                
+
         await self.db.commit()
         return result
 

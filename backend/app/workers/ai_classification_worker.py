@@ -2,7 +2,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select, func, and_, or_
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.core.database import engine
@@ -38,13 +38,13 @@ async def run_classification_worker(ctx: dict[str, Any]) -> dict[str, Any]:
     """AI Classification and Embedding Worker"""
     async_session_factory = async_sessionmaker(engine, expire_on_commit=False)
     ai_provider = AIServiceFactory.get_provider()
-    
+
     async with async_session_factory() as session:
         sync_state = await get_sync_state(session, "ai_classification")
         sync_state.status = "in_progress"
         sync_state.started_at = datetime.now(timezone.utc)
         await update_sync_state(session, sync_state)
-        
+
         # We process 100 repositories that either:
         # 1. Have no classification (never classified)
         # 2. Have been updated since the last classification (change detection)
@@ -60,34 +60,34 @@ async def run_classification_worker(ctx: dict[str, Any]) -> dict[str, Any]:
             ).limit(100)
         )
         repos = result.scalars().all()
-        
+
         processed = 0
         errors = 0
         skipped = 0
-        
+
         for repo in repos:
             try:
                 # Classify
                 prompt = build_classification_prompt(repo)
                 classification = await ai_provider.classify_repository(prompt)
-                
+
                 # Embed
                 text_to_embed = build_embedding_text(repo, classification)
                 embedding = await ai_provider.generate_embedding(text_to_embed)
-                
+
                 # Update Repository
                 repo.classification = classification
                 repo.embedding = embedding
                 repo.classification_updated_at = datetime.now(timezone.utc)
-                
+
                 processed += 1
             except Exception as e:
                 logger.error(f"Error classifying repo {repo.id}: {e}")
                 errors += 1
-                
+
         if processed > 0:
             await session.commit()
-            
+
         sync_state.items_processed += processed
         sync_state.total_processed += processed
         sync_state.total_errors += errors
@@ -95,7 +95,7 @@ async def run_classification_worker(ctx: dict[str, Any]) -> dict[str, Any]:
         sync_state.status = "completed"
         sync_state.completed_at = datetime.now(timezone.utc)
         await update_sync_state(session, sync_state)
-        
+
         return {
             "status": "success",
             "processed": processed,

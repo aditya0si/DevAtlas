@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select, update
@@ -35,33 +35,33 @@ class GitHubRepository:
     async def bulk_upsert_repositories(self, repositories: list[Repository]) -> None:
         if not repositories:
             return
-            
+
         # Extract dictionaries from models, excluding SQLAlchemy state
         values = []
         for repo in repositories:
             repo_dict = {
-                k: v for k, v in repo.__dict__.items() 
+                k: v for k, v in repo.__dict__.items()
                 if not k.startswith('_') and k not in ('id', 'events', 'ingested_at')
             }
             # Handle uuid if set
             if hasattr(repo, 'id') and repo.id:
                 repo_dict['id'] = repo.id
             values.append(repo_dict)
-            
+
         stmt = insert(Repository).values(values)
-        
+
         # Exclude fields we don't want to update on conflict
         update_dict = {
-            c.name: c for c in stmt.excluded 
+            c.name: c for c in stmt.excluded
             if c.name not in ('id', 'github_id', 'created_at', 'ingested_at')
         }
-        
+
         # Add ON CONFLICT DO UPDATE
         stmt = stmt.on_conflict_do_update(
             index_elements=['github_id'],
             set_=update_dict
         )
-        
+
         await self.db.execute(stmt)
         await self.db.flush()
 

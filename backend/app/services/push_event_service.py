@@ -1,20 +1,17 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, AsyncGenerator, Optional
-from uuid import uuid4
+from typing import Any, Optional
 
 import httpx
-from sqlalchemy import select, func, text
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
 from app.core.cache import get_cache_service
-from app.models.github import GitHubEvent, Repository, GitHubUser, SyncState
+from app.core.config import get_settings
+from app.models.github import GitHubEvent, GitHubUser, Repository, SyncState
 
 settings = get_settings()
 logger = logging.getLogger(__name__)

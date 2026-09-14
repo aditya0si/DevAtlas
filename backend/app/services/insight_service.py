@@ -18,7 +18,10 @@ class Insight(BaseModel):
 
     id: str
     text: str = Field(description="The insight text")
-    category: str = Field(description="Category: ai, cybersecurity, healthcare, robotics, web, mobile, devops, blockchain, opensource, general")
+    category: str = Field(
+        description="Category: ai, cybersecurity, healthcare, robotics, web, mobile, "
+        "devops, blockchain, opensource, general"
+    )
     region: str | None = Field(description="Region/state if applicable")
     metric_type: str = Field(description="Type: growth, activity, trend, comparison")
     metric_value: float | None = Field(description="Numeric metric if applicable")
@@ -94,6 +97,7 @@ class InsightService:
         frontend Time Machine can query historical years.
         """
         from sqlalchemy import func, select
+
         from app.models.github import GitHubEvent, Repository
 
         year_start, year_end = self._year_bounds(year)
@@ -254,10 +258,14 @@ class InsightService:
     async def _get_domain_counts(self, year: int | None = None) -> dict[str, int]:
         """Get repository counts by domain."""
         from sqlalchemy import func, select
+
         from app.models.github import Repository
 
         year_start, year_end = self._year_bounds(year)
-        domains = ["ai/ml", "cybersecurity", "healthcare", "robotics", "web", "mobile", "devops", "blockchain", "opensource"]
+        domains = [
+            "ai/ml", "cybersecurity", "healthcare", "robotics", "web", "mobile", "devops",
+            "blockchain", "opensource",
+        ]
         counts = {}
 
         for domain in domains:
@@ -283,6 +291,7 @@ class InsightService:
         (``github_users.state``), which is resolved from the owner's location.
         """
         from sqlalchemy import func, select
+
         from app.models.github import GitHubUser, Repository
 
         year_start, year_end = self._year_bounds(year)
@@ -318,7 +327,8 @@ class InsightService:
         if growth["weekly_growth"] > 5:
             insights.append(Insight(
                 id=f"growth_week_{datetime.now().strftime('%Y%m%d%H%M%S')}",
-                text=f"India's developer ecosystem grew by {growth['weekly_growth']}% this week with {growth['repos_this_week']} new repositories.",
+                text=f"India's developer ecosystem grew by {growth['weekly_growth']}% this week with "
+                f"{growth['repos_this_week']} new repositories.",
                 category="general",
                 region=None,
                 metric_type="growth",
@@ -329,7 +339,8 @@ class InsightService:
         if growth["monthly_growth"] > 15:
             insights.append(Insight(
                 id=f"growth_month_{datetime.now().strftime('%Y%m%d%H%M%S')}",
-                text=f"Monthly growth reached {growth['monthly_growth']}% with {growth['repos_this_month']} repositories added in the last 30 days.",
+                text=f"Monthly growth reached {growth['monthly_growth']}% with "
+                f"{growth['repos_this_month']} repositories added in the last 30 days.",
                 category="general",
                 region=None,
                 metric_type="growth",
@@ -347,7 +358,8 @@ class InsightService:
             top_state = stats.top_states[0]
             insights.append(Insight(
                 id=f"top_state_{datetime.now().strftime('%Y%m%d%H%M%S')}",
-                text=f"{top_state['state']} continues to dominate with {top_state['repositories']} repositories, leading all Indian states in developer activity.",
+                text=f"{top_state['state']} continues to dominate with {top_state['repositories']} "
+                "repositories, leading all Indian states in developer activity.",
                 category="general",
                 region=top_state["state"],
                 metric_type="activity",
@@ -377,7 +389,8 @@ class InsightService:
             top_lang = stats.top_languages[0]
             insights.append(Insight(
                 id=f"top_lang_{datetime.now().strftime('%Y%m%d%H%M%S')}",
-                text=f"{top_lang['language']} leads as the most popular language with {top_lang['count']} repositories.",
+                text=f"{top_lang['language']} leads as the most popular language with "
+                f"{top_lang['count']} repositories.",
                 category="general",
                 region=None,
                 metric_type="trend",
@@ -420,7 +433,8 @@ class InsightService:
                 ratio = (second["repositories"] / first["repositories"]) * 100
                 insights.append(Insight(
                     id=f"comparison_{datetime.now().strftime('%Y%m%d%H%M%S')}",
-                    text=f"{second['state']} has {ratio:.0f}% of {first['state']}'s repository count, showing potential for growth.",
+                    text=f"{second['state']} has {ratio:.0f}% of {first['state']}'s repository count, "
+                    "showing potential for growth.",
                     category="general",
                     region=f"{first['state']} vs {second['state']}",
                     metric_type="comparison",
@@ -457,7 +471,7 @@ class InsightService:
 
     def _build_summary_prompt(self, stats: IndiaEcosystemStats, region: str | None) -> str:
         """Build prompt for summary generation."""
-        top_langs = ", ".join([f"{l['language']} ({l['count']})" for l in stats.top_languages[:5]])
+        top_langs = ", ".join([f"{lang['language']} ({lang['count']})" for lang in stats.top_languages[:5]])
         top_states = ", ".join([f"{s['state']} ({s['repositories']})" for s in stats.top_states[:5]])
 
         region_context = f" for region {region}" if region else " for India"

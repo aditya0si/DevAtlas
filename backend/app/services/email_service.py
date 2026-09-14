@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import secrets
 from abc import ABC, abstractmethod
-from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from app.core.config import get_settings
@@ -71,14 +69,16 @@ If you didn't create an account, please ignore this email.
     <h1 style="color: #333;">Welcome to DevAtlas!</h1>
     <p>Please verify your email address by clicking the button below:</p>
     <p style="margin: 30px 0;">
-        <a href="{verify_url}" style="background-color: #f97316; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block;">
+        <a href="{verify_url}" style="background-color: #f97316; color: white; padding: 12px 24px;
+            text-decoration: none; border-radius: 6px; display: inline-block;">
             Verify Email Address
         </a>
     </p>
     <p>Or copy this link into your browser:</p>
     <p style="word-break: break-all; color: #666;">{verify_url}</p>
     <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
-    <p style="color: #999; font-size: 12px;">This link expires in 24 hours. If you didn't create an account, please ignore this email.</p>
+    <p style="color: #999; font-size: 12px;">This link expires in 24 hours. If you didn't create an
+    account, please ignore this email.</p>
 </body>
 </html>
 """
@@ -111,9 +111,10 @@ class SMTPEmailService(EmailService):
         html_body: str,
         text_body: Optional[str] = None,
     ) -> bool:
-        import aiosmtplib
         from email.mime.multipart import MIMEMultipart
         from email.mime.text import MIMEText
+
+        import aiosmtplib
 
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject
@@ -160,14 +161,16 @@ If you didn't create an account, please ignore this email.
     <h1 style="color: #333;">Welcome to DevAtlas!</h1>
     <p>Please verify your email address by clicking the button below:</p>
     <p style="margin: 30px 0;">
-        <a href="{verify_url}" style="background-color: #f97316; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block;">
+        <a href="{verify_url}" style="background-color: #f97316; color: white; padding: 12px 24px;
+            text-decoration: none; border-radius: 6px; display: inline-block;">
             Verify Email Address
         </a>
     </p>
     <p>Or copy this link into your browser:</p>
     <p style="word-break: break-all; color: #666;">{verify_url}</p>
     <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
-    <p style="color: #999; font-size: 12px;">This link expires in 24 hours. If you didn't create an account, please ignore this email.</p>
+    <p style="color: #999; font-size: 12px;">This link expires in 24 hours. If you didn't create an
+    account, please ignore this email.</p>
 </body>
 </html>
 """

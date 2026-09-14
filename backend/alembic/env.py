@@ -1,7 +1,8 @@
+import asyncio
 from logging.config import fileConfig
-from pathlib import Path
 
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import pool
+from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
 from app.core.config import get_settings
@@ -19,12 +20,14 @@ config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"
 target_metadata = Base.metadata
 
 
-from sqlalchemy.ext.asyncio import async_engine_from_config
-import asyncio
-
 def run_migrations_offline() -> None:
     url = config.get_main_option("sqlalchemy.url")
-    context.configure(url=url, target_metadata=target_metadata, literal_binds=True, dialect_opts={"paramstyle": "named"})
+    context.configure(
+        url=url,
+        target_metadata=target_metadata,
+        literal_binds=True,
+        dialect_opts={"paramstyle": "named"},
+    )
     with context.begin_transaction():
         context.run_migrations()
 

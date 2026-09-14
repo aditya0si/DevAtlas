@@ -57,23 +57,22 @@ class EmbeddingService:
     def _build_embedding_text(self, repo: Any) -> str:
         """Build text for embedding from repository data."""
         parts = [repo.name or "", repo.description or ""]
-        
+
         # Add README if available
         readme_text = self._extract_readme_text(repo)
         if readme_text:
             parts.append(readme_text[:2000])  # Limit README to 2000 chars
-        
+
         # Add topics
         if repo.topics:
             parts.extend(repo.topics[:10])  # Limit to 10 topics
-        
+
         return " | ".join(filter(None, parts))
 
     async def _fetch_readme(self, owner: str, repo: str, default_branch: str | None) -> str | None:
         """Fetch README content from GitHub API."""
-        branch = default_branch or "main"
         url = f"https://api.github.com/repos/{owner}/{repo}/readme"
-        
+
         try:
             response = await self.http_client.get(
                 url,
@@ -86,7 +85,7 @@ class EmbeddingService:
                 return response.text
         except Exception:
             pass
-        
+
         return None
 
     def _extract_readme_text(self, repo: Any) -> str | None:

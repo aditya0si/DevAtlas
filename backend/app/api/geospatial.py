@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Annotated, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
@@ -73,7 +73,8 @@ async def get_developer_activity(
     domain: Optional[str] = Query(
         default=None,
         pattern="^(ai|cybersecurity|healthcare|robotics|web|mobile|devops|blockchain|opensource)$",
-        description="Filter by domain: ai, cybersecurity, healthcare, robotics, web, mobile, devops, blockchain, opensource",
+        description="Filter by domain: ai, cybersecurity, healthcare, robotics, web, mobile, "
+        "devops, blockchain, opensource",
     ),
     time_range: Optional[str] = Query(
         default=None,
@@ -112,7 +113,7 @@ async def get_developer_activity(
         year_start = datetime(year, 1, 1, tzinfo=timezone.utc)
         year_end = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
 
-    query = text(f"""
+    query = text("""
         SELECT
             r.id,
             r.name,
