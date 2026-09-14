@@ -4,6 +4,13 @@ import PremiumHomepage from '../PremiumHomepage';
 
 jest.mock('framer-motion', () => require('../../test/mocks/framer-motion'));
 
+const mockGetEcosystemStats = jest.fn();
+jest.mock('@/lib/api', () => ({
+  api: {
+    getEcosystemStats: (...args: unknown[]) => mockGetEcosystemStats(...args),
+  },
+}));
+
 const stats = {
   total_repositories: 85000,
   total_events: 1200000,
@@ -29,32 +36,22 @@ const stats = {
   opensource_repos_count: 30,
 };
 
-const jsonResponse = (body: unknown) => ({
-  ok: true,
-  status: 200,
-  json: async () => body,
-  text: async () => JSON.stringify(body),
-});
-
-describe('PremiumHomepage API-backed stats', () => {
+describe('PremiumHomepage Firestore-backed stats', () => {
   beforeEach(() => {
-    global.fetch = jest.fn() as unknown as typeof fetch;
+    mockGetEcosystemStats.mockReset();
   });
 
   it('requests ecosystem stats for the selected year through the API client', async () => {
-    (global.fetch as jest.Mock).mockResolvedValue(jsonResponse(stats));
+    mockGetEcosystemStats.mockResolvedValue(stats);
     render(<PremiumHomepage year={2024} />);
 
     await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith(
-        expect.stringContaining('/api/v1/india/stats?year=2024'),
-        expect.anything()
-      );
+      expect(mockGetEcosystemStats).toHaveBeenCalledWith(2024, expect.any(AbortSignal));
     });
   });
 
-  it('renders API-backed stat labels and the real growth change after loading', async () => {
-    (global.fetch as jest.Mock).mockResolvedValue(jsonResponse(stats));
+  it('renders data-backed stat labels and the real growth change after loading', async () => {
+    mockGetEcosystemStats.mockResolvedValue(stats);
     render(<PremiumHomepage year={2024} />);
 
     await waitFor(() => {
@@ -68,12 +65,7 @@ describe('PremiumHomepage API-backed stats', () => {
   });
 
   it('shows a truthful error state when the stats request fails', async () => {
-    (global.fetch as jest.Mock).mockResolvedValue({
-      ok: false,
-      status: 500,
-      json: async () => ({ detail: 'boom' }),
-      text: async () => JSON.stringify({ detail: 'boom' }),
-    });
+    mockGetEcosystemStats.mockRejectedValue(new Error('boom'));
     render(<PremiumHomepage year={2024} />);
 
     await waitFor(() => {

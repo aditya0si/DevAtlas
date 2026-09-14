@@ -368,7 +368,11 @@ export const api = {
   getIndiaOverview: (_year?: number, _signal?: AbortSignal) =>
     firestoreApi.getIndiaOverview(),
 
-  getStateDashboard: (_stateCode: string, _year?: number, _signal?: AbortSignal) =>
+  getStateDashboard: (
+    _stateCode: string,
+    _year?: number,
+    _signal?: AbortSignal
+  ): Promise<StateDashboardData> =>
     Promise.reject(new Error('State dashboard not available in Firestore mode')),
 
   // Geospatial Activity (map data)
@@ -386,7 +390,11 @@ export const api = {
     firestoreApi.getRepositoryDetails(repoId),
 
   // AI & Analytics — require server-side processing, not available
-  semanticSearch: (_query: string, _limit = 10, _signal?: AbortSignal) =>
+  semanticSearch: (
+    _query: string,
+    _limit = 10,
+    _signal?: AbortSignal
+  ): Promise<SemanticSearchResponse> =>
     Promise.reject(new Error('Semantic search requires server-side embeddings')),
 
   explainTrends: (
@@ -400,9 +408,14 @@ export const api = {
       domain?: string;
     },
     _signal?: AbortSignal
-  ) => Promise.reject(new Error('Trend explanation requires server-side AI')),
+  ): Promise<TrendExplanationData> => Promise.reject(new Error('Trend explanation requires server-side AI')),
 
-  compareStates: (_stateA: string, _stateB: string, _year?: number, _signal?: AbortSignal) =>
+  compareStates: (
+    _stateA: string,
+    _stateB: string,
+    _year?: number,
+    _signal?: AbortSignal
+  ): Promise<StateComparisonResponse> =>
     Promise.reject(new Error('State comparison requires server-side processing')),
 
   getDiscovery: (_signal?: AbortSignal) => firestoreApi.getDiscovery(),
@@ -420,15 +433,25 @@ export const api = {
     _onChunk: (chunk: string) => void,
     _onComplete?: () => void,
     onError?: (err: any) => void,
+    _onSession?: (sessionId: string) => void,
+    _onCitations?: (citations: any[]) => void,
+    _sessionId?: string,
   ) => {
     onError?.(new Error('Copilot requires server-side streaming'));
     return () => {};
   },
 
   // Auth — stubbed (Firebase Auth would be configured separately)
-  login: (_credentials: { email: string; password: string }) =>
+  login: (_credentials: {
+    email: string;
+    password: string;
+  }): Promise<AuthResponse> =>
     Promise.reject(new Error('Auth not configured in Firestore mode')),
-  register: (_userData: { email: string; password: string; full_name?: string }) =>
+  register: (_userData: {
+    email: string;
+    password: string;
+    full_name?: string;
+  }): Promise<AuthResponse> =>
     Promise.reject(new Error('Auth not configured in Firestore mode')),
   getCurrentUser: () => Promise.resolve(null),
 

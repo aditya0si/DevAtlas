@@ -1,275 +1,277 @@
 import { api } from '../api';
 
-describe('api query construction', () => {
-  let fetchMock: jest.Mock;
+// The frontend data layer queries Firestore directly. Mock the Firebase client
+// boundary (the module that owns the Firestore SDK) instead of stubbing fetch.
+jest.mock('firebase/firestore', () => ({
+  collection: jest.fn(),
+  getDocs: jest.fn(),
+  doc: jest.fn(),
+  getDoc: jest.fn(),
+  query: jest.fn(),
+  where: jest.fn(),
+  orderBy: jest.fn(),
+  limit: jest.fn(),
+}));
 
+jest.mock('@/lib/firebase', () => ({ db: {} }));
+
+import { collection, getDocs, doc, getDoc, query, where, orderBy, limit } from 'firebase/firestore';
+
+const mockCollection = collection as jest.Mock;
+const mockGetDocs = getDocs as jest.Mock;
+const mockDoc = doc as jest.Mock;
+const mockGetDoc = getDoc as jest.Mock;
+const mockQuery = query as jest.Mock;
+const mockWhere = where as jest.Mock;
+const mockOrderBy = orderBy as jest.Mock;
+const mockLimit = limit as jest.Mock;
+
+/** Build the shape returned by a Firestore QuerySnapshot. */
+const snapshotOf = (docs: Array<{ id: string; data?: Record<string, any> }>) => ({
+  forEach: (cb: (d: { id: string; data: () => Record<string, any> }) => void) =>
+    docs.forEach((d) => cb({ id: d.id, data: () => d.data || {} })),
+});
+
+/** Build the shape returned by an existing DocumentSnapshot. */
+const documentOf = (id: string, data: Record<string, any>) => ({
+  id,
+  exists: () => true,
+  data: () => data,
+});
+
+const missingDocument = () => ({
+  id: 'missing',
+  exists: () => false,
+  data: () => undefined,
+});
+
+/** Resolve getDocs for a named collection, defaulting to an empty snapshot. */
+const respondWithCollection = (byName: Record<string, Array<{ id: string; data?: Record<string, any> }>>) => {
+  mockGetDocs.mockImplementation(async (q: any) => {
+    const name = q?.__query?.[0]?.__collection;
+    return snapshotOf(byName[name] || []);
+  });
+};
+
+describe('api Firestore data layer', () => {
   beforeEach(() => {
-    fetchMock = jest.fn();
-    global.fetch = fetchMock as unknown as typeof fetch;
+    jest.clearAllMocks();
+
+    mockCollection.mockImplementation((_db, name) => ({ __collection: name }));
+    mockQuery.mockImplementation((...parts) => ({ __query: parts }));
+    mockLimit.mockImplementation((n) => ({ __constraint: 'limit', n }));
+    mockWhere.mockImplementation((field, op, value) => ({ __constraint: 'where', field, op, value }));
+    mockOrderBy.mockImplementation((field, dir) => ({ __constraint: 'orderBy', field, dir }));
+    mockDoc.mockImplementation((_db, coll, id) => ({ __doc: [coll, id] }));
+
+    mockGetDocs.mockResolvedValue(snapshotOf([]));
+    mockGetDoc.mockResolvedValue(missingDocument());
   });
 
-  const mockOk = (body: unknown) => {
-    fetchMock.mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => body,
-      text: async () => JSON.stringify(body),
-    } as Response);
-  };
-
-  it('builds geospatial activity URL with domain, year and limit', async () => {
-    mockOk({ type: 'FeatureCollection', features: [] });
-    await api.getGeospatialActivity('-180,-90,180,90', {
-      domain: 'AI',
-      year: 2024,
-      limit: 5000,
-    });
-    const url = String(fetchMock.mock.calls[0][0]);
-    expect(url).toContain('/api/v1/geospatial/activity');
-    expect(url).toContain('bbox=-180%2C-90%2C180%2C90');
-    expect(url).toContain('domain=ai');
-    expect(url).toContain('year=2024');
-    expect(url).toContain('limit=5000');
-  });
-
-  it('maps the Web3 filter to the blockchain domain', async () => {
-    mockOk({ type: 'FeatureCollection', features: [] });
-    await api.getGeospatialActivity('-180,-90,180,90', { domain: 'Web3', year: 2025 });
-    const url = String(fetchMock.mock.calls[0][0]);
-    expect(url).toContain('domain=blockchain');
-  });
-
-  it('omits the domain param for "All Projects"', async () => {
-    mockOk({ type: 'FeatureCollection', features: [] });
-    await api.getGeospatialActivity('-180,-90,180,90', {
-      domain: 'All Projects',
-      year: 2026,
-    });
-    const url = String(fetchMock.mock.calls[0][0]);
-    expect(url).not.toContain('domain=');
-    expect(url).toContain('year=2026');
-  });
-
-  it('forwards an AbortSignal to the geospatial activity request', async () => {
-    mockOk({ type: 'FeatureCollection', features: [] });
-    const controller = new AbortController();
-    await api.getGeospatialActivity('-180,-90,180,90', {
-      domain: 'AI',
-      year: 2025,
-      limit: 5000,
-      signal: controller.signal,
-    });
-    const [, init] = fetchMock.mock.calls[0];
-    expect(init.signal).toBe(controller.signal);
-  });
-
-  it('omits the AbortSignal for the geospatial activity request when not provided', async () => {
-    mockOk({ type: 'FeatureCollection', features: [] });
-    await api.getGeospatialActivity('-180,-90,180,90');
-    const [, init] = fetchMock.mock.calls[0];
-    expect(init.signal).toBeUndefined();
-  });
-
-  it('builds ecosystem stats URL with a year for the Time Machine', async () => {
-    mockOk({});
-    await api.getEcosystemStats(2023);
-    const url = String(fetchMock.mock.calls[0][0]);
-    expect(url).toContain('/api/v1/india/stats');
-    expect(url).toContain('year=2023');
-  });
-
-  it('builds ecosystem stats URL without year when omitted', async () => {
-    mockOk({});
-    await api.getEcosystemStats();
-    const url = String(fetchMock.mock.calls[0][0]);
-    expect(url).toBe('/api/v1/india/stats');
-  });
-
-  it('forwards an AbortSignal to the ecosystem stats request', async () => {
-    mockOk({});
-    const controller = new AbortController();
-    await api.getEcosystemStats(2025, controller.signal);
-    const [, init] = fetchMock.mock.calls[0];
-    expect(init.signal).toBe(controller.signal);
-  });
-
-  it('builds the insights URL with the requested limit', async () => {
-    mockOk([]);
-    await api.getInsights(5);
-    const url = String(fetchMock.mock.calls[0][0]);
-    expect(url).toBe('/api/v1/india/insights?limit=5');
-  });
-
-  it('forwards an AbortSignal to the insights request', async () => {
-    mockOk([]);
-    const controller = new AbortController();
-    await api.getInsights(10, controller.signal);
-    const [, init] = fetchMock.mock.calls[0];
-    expect(init.signal).toBe(controller.signal);
-  });
-
-  it('forwards an AbortSignal to the seed-status request', async () => {
-    mockOk({ has_data: true, total_repos: 5, embedded_repos: 0, ready: true });
-    const controller = new AbortController();
-    await api.getSeedStatus(controller.signal);
-    const [, init] = fetchMock.mock.calls[0];
-    expect(init.signal).toBe(controller.signal);
-  });
-
-  it('builds analytics graphs URL with time_range and year', async () => {
-    mockOk({});
-    await api.getAnalyticsGraphs('quarter', 2024);
-    const url = String(fetchMock.mock.calls[0][0]);
-    expect(url).toContain('/api/v1/india/analytics/graphs');
-    expect(url).toContain('time_range=quarter');
-    expect(url).toContain('year=2024');
-  });
-
-  it('POSTs the trend explanation request with the backend body contract', async () => {
-    mockOk({});
-    await api.explainTrends({
-      entity_type: 'national',
-      entity_name: 'India',
-      metric_name: 'repository_count',
-      current_value: 120,
-      previous_value: 100,
-      time_range: 'month',
+  it('derives ecosystem stats from the Firestore repositories and developers collections', async () => {
+    respondWithCollection({
+      repositories: [
+        { id: '1', data: { language: 'Python', domain: 'ai', city: 'Bengaluru', stars: 10, forks: 2 } },
+        { id: '2', data: { language: 'Python', domain: 'web', city: 'Mumbai', stars: 5, forks: 1 } },
+      ],
+      developers: [{ id: 'd1' }, { id: 'd2' }],
     });
 
-    const [url, init] = fetchMock.mock.calls[0];
-    expect(String(url)).toBe('/api/v1/india/trends/explain');
-    expect(init.method).toBe('POST');
-    expect(JSON.parse(init.body)).toEqual({
-      entity_type: 'national',
-      entity_name: 'India',
-      metric_name: 'repository_count',
-      current_value: 120,
-      previous_value: 100,
-      time_range: 'month',
+    const stats = await api.getEcosystemStats(2024);
+
+    expect(mockCollection).toHaveBeenCalledWith({}, 'repositories');
+    expect(mockCollection).toHaveBeenCalledWith({}, 'developers');
+    expect(stats.total_repositories).toBe(2);
+    expect(stats.total_developers).toBe(2);
+    expect(stats.active_developers).toBe(2);
+    expect(stats.total_stars).toBe(15);
+    expect(stats.total_forks).toBe(3);
+    expect(stats.top_language).toBe('Python');
+    expect(stats.top_state).toBe('Bengaluru');
+    expect(stats.top_states[0]).toEqual({ state: 'Bengaluru', repositories: 1, rank: 1 });
+    expect(stats.ai_repos_count).toBe(1);
+    expect(stats.ai_repo_percentage).toBe(50);
+  });
+
+  it('maps UI domain filters to Firestore where-clauses and omits them for All Projects', async () => {
+    await api.getGeospatialActivity('-180,-90,180,90', { domain: 'Web3', limit: 5000 });
+    expect(mockLimit).toHaveBeenCalledWith(5000);
+    expect(mockWhere).toHaveBeenCalledWith('domain', '==', 'blockchain');
+
+    mockWhere.mockClear();
+    await api.getGeospatialActivity('-180,-90,180,90', { domain: 'All Projects' });
+    expect(mockWhere).not.toHaveBeenCalled();
+
+    await api.getGeospatialActivity('-180,-90,180,90', { domain: 'AI' });
+    expect(mockWhere).toHaveBeenCalledWith('domain', '==', 'ai');
+  });
+
+  it('builds GeoJSON features only for repositories that have coordinates', async () => {
+    respondWithCollection({
+      repositories: [
+        {
+          id: '1',
+          data: {
+            name: 'atlas',
+            full_name: 'org/atlas',
+            language: 'TypeScript',
+            stars: 100,
+            coordinates: { longitude: 77.5946, latitude: 12.9716 },
+            classification: { domain: 'ai' },
+            domain: 'ai',
+            description: 'A repo',
+          },
+        },
+        { id: '2', data: { name: 'no-coords', coordinates: null } },
+      ],
     });
+
+    const featureCollection = await api.getGeospatialActivity('-180,-90,180,90');
+
+    expect(featureCollection.type).toBe('FeatureCollection');
+    expect(featureCollection.features).toHaveLength(1);
+    expect(featureCollection.features[0].geometry.coordinates).toEqual([77.5946, 12.9716]);
+    expect(featureCollection.features[0].properties.id).toBe('1');
+    expect(featureCollection.features[0].properties.full_name).toBe('org/atlas');
   });
 
-  it('builds the compare URL with backend state_a/state_b params and optional year', async () => {
-    mockOk({});
-    await api.compareStates('Karnataka', 'Maharashtra', 2024);
+  it('builds the India overview from the Firestore ecosystem stats', async () => {
+    respondWithCollection({
+      repositories: [{ id: '1', data: { language: 'Python', domain: 'ai', city: 'Bengaluru', stars: 1 } }],
+      developers: [{ id: 'd1' }],
+    });
 
-    const [url, init] = fetchMock.mock.calls[0];
-    const href = String(url);
-    expect(href).toContain('/api/v1/india/compare');
-    expect(href).toContain('state_a=Karnataka');
-    expect(href).toContain('state_b=Maharashtra');
-    expect(href).toContain('year=2024');
-    // No query string params are passed in the body for a GET.
-    expect(init.method).toBeUndefined();
+    const overview = await api.getIndiaOverview(2024);
+
+    expect(overview.title).toBe('DevAtlas India Ecosystem Overview');
+    expect(overview.total_repositories).toBe(1);
+    expect(overview.summary).toContain('1 repositories tracked');
   });
 
-  it('omits year from the compare URL when not provided', async () => {
-    mockOk({});
-    await api.compareStates('Karnataka', 'Maharashtra');
-    const url = String(fetchMock.mock.calls[0][0]);
-    expect(url).not.toContain('year=');
+  it('aggregates analytics graphs from the Firestore repositories collection', async () => {
+    respondWithCollection({
+      repositories: [
+        { id: '1', data: { language: 'Python', domain: 'ai', created_at: '2024-01-15T00:00:00Z' } },
+        { id: '2', data: { language: 'Python', domain: 'web', created_at: '2024-02-15T00:00:00Z' } },
+      ],
+    });
+
+    const graphs = await api.getAnalyticsGraphs('month', 2024);
+
+    expect(graphs.repositories_over_time).toEqual([
+      { date: '2024-01', value: 1 },
+      { date: '2024-02', value: 1 },
+    ]);
+    expect(graphs.language_popularity).toEqual([{ language: 'Python', count: 2 }]);
+    expect(graphs.top_domains).toEqual([
+      { domain: 'ai', count: 1 },
+      { domain: 'web', count: 1 },
+    ]);
   });
 
-  it('resolves the full comparison response shape', async () => {
-    const comparison = {
-      comparison: { state_a: 'Karnataka', state_b: 'Maharashtra' },
-      summary: { summary: 'Test summary', winner: null, score_difference: 0 },
-      insights: [],
-    };
-    mockOk(comparison);
-    await expect(api.compareStates('Karnataka', 'Maharashtra')).resolves.toEqual(comparison);
+  it('returns repository details for an existing Firestore document', async () => {
+    mockGetDoc.mockResolvedValue(
+      documentOf('repo-1', {
+        name: 'atlas',
+        full_name: 'org/atlas',
+        description: 'A repo',
+        html_url: 'https://github.com/org/atlas',
+        language: 'TypeScript',
+        stars: 5,
+        forks: 2,
+        open_issues: 1,
+        topics: ['india'],
+        default_branch: 'main',
+        created_at: '2024-01-01T00:00:00Z',
+        updated_at: '2024-02-01T00:00:00Z',
+        pushed_at: '2024-03-01T00:00:00Z',
+        classification: { domain: 'ai' },
+        owner_login: 'org',
+      })
+    );
+
+    const repo = await api.getRepositoryDetails('repo-1');
+
+    expect(mockGetDoc).toHaveBeenCalledWith({ __doc: ['repositories', 'repo-1'] });
+    expect(repo.id).toBe('repo-1');
+    expect(repo.name).toBe('atlas');
+    expect(repo.full_name).toBe('org/atlas');
+    expect(repo.stargazers_count).toBe(5);
+    expect(repo.forks_count).toBe(2);
+    expect(repo.topics).toEqual(['india']);
+    expect(repo.owner).toEqual({ login: 'org' });
   });
 
-  it('builds the state dashboard URL from the state name and year', async () => {
-    mockOk({});
-    await api.getStateDashboard('Karnataka', 2024);
-    const url = String(fetchMock.mock.calls[0][0]);
-    expect(url).toBe('/api/v1/india/states/Karnataka?year=2024');
-  });
+  it('throws "Repository not found" when the Firestore document does not exist', async () => {
+    mockGetDoc.mockResolvedValue(missingDocument());
 
-  it('forwards an AbortSignal to the state dashboard request', async () => {
-    mockOk({});
-    const controller = new AbortController();
-    await api.getStateDashboard('Karnataka', 2024, controller.signal);
-    const [, init] = fetchMock.mock.calls[0];
-    expect(init.signal).toBe(controller.signal);
-  });
-
-  it('omits the AbortSignal for the state dashboard request when not provided', async () => {
-    mockOk({});
-    await api.getStateDashboard('Karnataka', 2024);
-    const [, init] = fetchMock.mock.calls[0];
-    expect(init.signal).toBeUndefined();
-  });
-
-  it('builds the India overview URL with a year', async () => {
-    mockOk({});
-    await api.getIndiaOverview(2024);
-    const url = String(fetchMock.mock.calls[0][0]);
-    expect(url).toBe('/api/v1/india/overview?year=2024');
-  });
-
-  it('forwards an AbortSignal to the India overview request', async () => {
-    mockOk({});
-    const controller = new AbortController();
-    await api.getIndiaOverview(2024, controller.signal);
-    const [, init] = fetchMock.mock.calls[0];
-    expect(init.signal).toBe(controller.signal);
-  });
-
-  it('omits the AbortSignal for the India overview request when not provided', async () => {
-    mockOk({});
-    await api.getIndiaOverview(2024);
-    const [, init] = fetchMock.mock.calls[0];
-    expect(init.signal).toBeUndefined();
-  });
-
-  it('POSTs the semantic search request with query and limit', async () => {
-    mockOk({ query: 'Python', results: [], total: 0 });
-    await api.semanticSearch('Python', 5);
-    const [url, init] = fetchMock.mock.calls[0];
-    expect(String(url)).toBe('/api/v1/india/search/semantic');
-    expect(init.method).toBe('POST');
-    expect(JSON.parse(init.body)).toEqual({ query: 'Python', limit: 5 });
-  });
-
-  it('forwards an AbortSignal to the semantic search request', async () => {
-    mockOk({ query: 'Python', results: [], total: 0 });
-    const controller = new AbortController();
-    await api.semanticSearch('Python', 5, controller.signal);
-    const [, init] = fetchMock.mock.calls[0];
-    expect(init.signal).toBe(controller.signal);
-  });
-
-  it('omits the AbortSignal for the semantic search request when not provided', async () => {
-    mockOk({ query: 'Python', results: [], total: 0 });
-    await api.semanticSearch('Python', 5);
-    const [, init] = fetchMock.mock.calls[0];
-    expect(init.signal).toBeUndefined();
-  });
-
-  it('builds repository detail URL from the repo id', async () => {
-    mockOk({});
-    await api.getRepositoryDetails('abc-123');
-    const url = String(fetchMock.mock.calls[0][0]);
-    expect(url).toBe('/api/v1/repositories/abc-123');
-  });
-
-  it('forwards an AbortSignal to the repository details request', async () => {
-    mockOk({});
-    const controller = new AbortController();
-    await api.getRepositoryDetails('abc-123', controller.signal);
-    const [, init] = fetchMock.mock.calls[0];
-    expect(init.signal).toBe(controller.signal);
-  });
-
-  it('throws APIError with the server detail on a non-ok response', async () => {
-    fetchMock.mockResolvedValue({
-      ok: false,
-      status: 404,
-      json: async () => ({ detail: 'Repository not found' }),
-      text: async () => JSON.stringify({ detail: 'Repository not found' }),
-    } as Response);
     await expect(api.getRepositoryDetails('missing')).rejects.toThrow('Repository not found');
+  });
+
+  it('reports seed status from the Firestore repositories and stats collections', async () => {
+    mockGetDocs.mockImplementation(async (q: any) => {
+      const name = q?.__query?.[0]?.__collection;
+      if (name === 'repositories') return snapshotOf([{ id: '1' }]);
+      if (name === 'stats') return snapshotOf([{ id: 'latest', data: { repos_synced: 42 } }]);
+      return snapshotOf([]);
+    });
+
+    const status = await api.getSeedStatus();
+
+    expect(status.has_data).toBe(true);
+    expect(status.ready).toBe(true);
+    expect(status.total_repos).toBe(42);
+  });
+
+  it('resolves coverage stats from Firestore repositories and developers', async () => {
+    respondWithCollection({
+      repositories: [
+        { id: '1', data: { coordinates: { longitude: 1, latitude: 1 } } },
+        { id: '2', data: {} },
+      ],
+      developers: [{ id: 'd1' }, { id: 'd2' }, { id: 'd3' }],
+    });
+
+    const coverage = await api.getCoverageStats();
+
+    expect(coverage.users_total).toBe(3);
+    expect(coverage.repos_total).toBe(2);
+    expect(coverage.repos_with_events).toBe(0);
+    expect(coverage.avg_geocoding_confidence).toBe(0);
+  });
+
+  it('resolves an empty insights list in Firestore mode', async () => {
+    await expect(api.getInsights(5)).resolves.toEqual([]);
+  });
+
+  it('rejects features that require server-side processing', async () => {
+    await expect(api.semanticSearch('python')).rejects.toThrow(
+      'Semantic search requires server-side embeddings'
+    );
+    await expect(
+      api.explainTrends({ entity_name: 'India', current_value: 120, previous_value: 100 })
+    ).rejects.toThrow('Trend explanation requires server-side AI');
+    await expect(api.compareStates('Karnataka', 'Maharashtra')).rejects.toThrow(
+      'State comparison requires server-side processing'
+    );
+    await expect(api.getStateDashboard('Karnataka')).rejects.toThrow(
+      'State dashboard not available in Firestore mode'
+    );
+  });
+
+  it('rejects auth flows that are not configured in Firestore mode', async () => {
+    await expect(api.login({ email: 'a@b.c', password: 'x' })).rejects.toThrow(
+      'Auth not configured in Firestore mode'
+    );
+    await expect(
+      api.register({ email: 'a@b.c', password: 'x', full_name: 'A' })
+    ).rejects.toThrow('Auth not configured in Firestore mode');
+    await expect(api.getCurrentUser()).resolves.toBeNull();
+  });
+
+  it('resolves static activity layers without hitting Firestore', async () => {
+    const layers = await api.getActivityLayers();
+    expect(layers.base_layers.map((l) => l.id)).toContain('heatmap');
+    expect(mockGetDocs).not.toHaveBeenCalled();
   });
 });

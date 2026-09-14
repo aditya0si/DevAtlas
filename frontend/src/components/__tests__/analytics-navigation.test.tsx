@@ -25,6 +25,19 @@ jest.mock('@/context/AuthContext', () => ({
   }),
 }));
 
+const mockGetSeedStatus = jest.fn();
+const mockGetEcosystemStats = jest.fn();
+const mockGetAnalyticsGraphs = jest.fn();
+const mockCompareStates = jest.fn();
+jest.mock('@/lib/api', () => ({
+  api: {
+    getSeedStatus: (...args: unknown[]) => mockGetSeedStatus(...args),
+    getEcosystemStats: (...args: unknown[]) => mockGetEcosystemStats(...args),
+    getAnalyticsGraphs: (...args: unknown[]) => mockGetAnalyticsGraphs(...args),
+    compareStates: (...args: unknown[]) => mockCompareStates(...args),
+  },
+}));
+
 const stats = {
   total_repositories: 100,
   total_events: 500,
@@ -96,34 +109,17 @@ const summary = {
   confidence_score: 0.5,
 };
 
-const jsonResponse = (body: unknown) => ({
-  ok: true,
-  status: 200,
-  json: async () => body,
-  text: async () => JSON.stringify(body),
-});
-
 describe('Analytics navigation', () => {
   beforeEach(() => {
-    const fetchMock = jest.fn((url: string | URL | Request) => {
-      const href = String(url);
-      if (href.includes('/india/seed-status')) {
-        return Promise.resolve(
-          jsonResponse({ has_data: true, total_repos: 100, embedded_repos: 60, ready: true })
-        );
-      }
-      if (href.includes('/india/stats')) {
-        return Promise.resolve(jsonResponse(stats));
-      }
-      if (href.includes('/india/analytics/graphs')) {
-        return Promise.resolve(jsonResponse(graphs));
-      }
-      if (href.includes('/india/compare')) {
-        return Promise.resolve(jsonResponse({ comparison, summary, insights: [] }));
-      }
-      return Promise.resolve(jsonResponse({}));
+    mockGetSeedStatus.mockReset().mockResolvedValue({
+      has_data: true,
+      total_repos: 100,
+      embedded_repos: 60,
+      ready: true,
     });
-    global.fetch = fetchMock as unknown as typeof fetch;
+    mockGetEcosystemStats.mockReset().mockResolvedValue(stats);
+    mockGetAnalyticsGraphs.mockReset().mockResolvedValue(graphs);
+    mockCompareStates.mockReset().mockResolvedValue({ comparison, summary, insights: [] });
   });
 
   it('navigates from the sidebar to the Analytics screen', async () => {
@@ -136,13 +132,13 @@ describe('Analytics navigation', () => {
     expect(screen.getByText('State Comparison')).toBeInTheDocument();
     expect(screen.getByText(String(getCurrentYear()))).toBeInTheDocument();
 
-    // Flush CompareStates async fetch inside act.
+    // Flush the CompareStates async response inside act.
     await waitFor(() => {
       expect(screen.getByText('Summary text')).toBeInTheDocument();
     });
   });
 
-  it('renders API-backed analytics graphs on the Analytics screen', async () => {
+  it('renders data-backed analytics graphs on the Analytics screen', async () => {
     render(<ImmersiveHome />);
     fireEvent.click(screen.getByRole('button', { name: 'Analytics' }));
 
@@ -181,16 +177,17 @@ describe('Analytics navigation', () => {
       expect(screen.getByText('Summary text')).toBeInTheDocument();
     });
 
-    const calls = (global.fetch as jest.Mock).mock.calls.map((call) => String(call[0]));
-    const graphsCall = calls.find((url) => url.includes('/india/analytics/graphs'));
-    expect(graphsCall).toBeDefined();
-    expect(graphsCall).toContain(`year=${getCurrentYear()}`);
+    expect(mockGetAnalyticsGraphs).toHaveBeenCalledWith(
+      'month',
+      getCurrentYear(),
+      expect.any(AbortSignal)
+    );
   });
 
   it('derives the live ticker and Developer Pulse from API stats, never hardcoded text', async () => {
     render(<ImmersiveHome />);
 
-    // The ticker is derived from the real /india/stats response (top state + repos).
+    // The ticker is derived from the real ecosystem stats response (top state + repos).
     await waitFor(() => {
       expect(screen.getAllByText('Karnataka leads with 100 repositories').length).toBeGreaterThan(0);
     });

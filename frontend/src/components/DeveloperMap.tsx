@@ -1,7 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import maplibregl from "maplibre-gl";
+import {
+  Map as MapLibreMap,
+  type GeoJSONSource,
+  type MapLayerMouseEvent,
+} from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { api } from "@/lib/api";
 import { useRealtimeRepos } from "@/lib/useRealtimeRepos";
@@ -64,7 +68,7 @@ const DeveloperMap = ({
   });
   const features = liveFeatures as unknown as GeoJSONFeature[];
 
-  const [map, setMap] = useState<maplibregl.Map | null>(null);
+  const [map, setMap] = useState<MapLibreMap | null>(null);
 
   // Story Mode playback state, kept in a ref so the imperative controls
   // (pause/resume/skip/stop) can mutate it without triggering re-renders.
@@ -103,7 +107,7 @@ const DeveloperMap = ({
   };
 
   useEffect(() => {
-    const instance = new maplibregl.Map({
+    const instance = new MapLibreMap({
       container: "devatlas-map",
       style: "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
       center: [0, 0], // Start from space (0,0)
@@ -219,7 +223,7 @@ const DeveloperMap = ({
   useEffect(() => {
     if (!map) return;
 
-    const handlePointClick = (e: maplibregl.MapLayerMouseEvent) => {
+    const handlePointClick = (e: MapLayerMouseEvent) => {
       const clicked = e.features;
       if (!clicked || clicked.length === 0) return;
       const repoId = clicked[0]?.properties?.id;
@@ -273,7 +277,7 @@ const DeveloperMap = ({
     const sourceId = "repositories";
 
     if (map.getSource(sourceId)) {
-      (map.getSource(sourceId) as maplibregl.GeoJSONSource).setData({
+      (map.getSource(sourceId) as GeoJSONSource).setData({
         type: "FeatureCollection",
         features: displayFeatures,
       });

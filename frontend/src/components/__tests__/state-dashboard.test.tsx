@@ -4,6 +4,15 @@ import StateDashboard from '../StateDashboard';
 
 jest.mock('framer-motion', () => require('../../test/mocks/framer-motion'));
 
+const mockGetEcosystemStats = jest.fn();
+const mockGetStateDashboard = jest.fn();
+jest.mock('@/lib/api', () => ({
+  api: {
+    getEcosystemStats: (...args: unknown[]) => mockGetEcosystemStats(...args),
+    getStateDashboard: (...args: unknown[]) => mockGetStateDashboard(...args),
+  },
+}));
+
 const stats = {
   total_repositories: 85000,
   total_events: 1200000,
@@ -37,22 +46,12 @@ const dashboard = {
   activity_graph: [],
 };
 
-const jsonResponse = (body: unknown) => ({
-  ok: true,
-  status: 200,
-  json: async () => body,
-  text: async () => JSON.stringify(body),
-});
-
 describe('StateDashboard request lifecycle', () => {
   beforeEach(() => {
-    const fetchMock = jest.fn((url: string | URL | Request) => {
-      const href = String(url);
-      if (href.includes('/india/stats')) return Promise.resolve(jsonResponse(stats));
-      if (href.includes('/india/states/')) return Promise.resolve(jsonResponse(dashboard));
-      return Promise.resolve(jsonResponse({}));
-    });
-    global.fetch = fetchMock as unknown as typeof fetch;
+    mockGetEcosystemStats.mockReset();
+    mockGetStateDashboard.mockReset();
+    mockGetEcosystemStats.mockResolvedValue(stats);
+    mockGetStateDashboard.mockResolvedValue(dashboard);
   });
 
   it('passes an AbortSignal to the top-states request and aborts it on unmount', async () => {
@@ -62,11 +61,8 @@ describe('StateDashboard request lifecycle', () => {
       expect(screen.getByText('Karnataka')).toBeInTheDocument();
     });
 
-    const calls = (global.fetch as jest.Mock).mock.calls;
-    const statsCall = calls.find(([url]) => String(url).includes('/india/stats'));
-    expect(statsCall).toBeDefined();
-    const statsSignal = statsCall[1].signal;
-    expect(statsSignal).toBeInstanceOf(AbortSignal);
+    expect(mockGetEcosystemStats).toHaveBeenCalledWith(2024, expect.any(AbortSignal));
+    const statsSignal = mockGetEcosystemStats.mock.calls[0][1] as AbortSignal;
     expect(statsSignal.aborted).toBe(false);
 
     unmount();
@@ -86,11 +82,8 @@ describe('StateDashboard request lifecycle', () => {
       expect(screen.getByText('Karnataka leads the ecosystem.')).toBeInTheDocument();
     });
 
-    const calls = (global.fetch as jest.Mock).mock.calls;
-    const dashboardCall = calls.find(([url]) => String(url).includes('/india/states/'));
-    expect(dashboardCall).toBeDefined();
-    const dashboardSignal = dashboardCall[1].signal;
-    expect(dashboardSignal).toBeInstanceOf(AbortSignal);
+    expect(mockGetStateDashboard).toHaveBeenCalledWith('Karnataka', 2024, expect.any(AbortSignal));
+    const dashboardSignal = mockGetStateDashboard.mock.calls[0][2] as AbortSignal;
     expect(dashboardSignal.aborted).toBe(false);
 
     unmount();

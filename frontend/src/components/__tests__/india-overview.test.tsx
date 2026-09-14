@@ -4,6 +4,13 @@ import IndiaOverview from '../IndiaOverview';
 
 jest.mock('framer-motion', () => require('../../test/mocks/framer-motion'));
 
+const mockGetEcosystemStats = jest.fn();
+jest.mock('@/lib/api', () => ({
+  api: {
+    getEcosystemStats: (...args: unknown[]) => mockGetEcosystemStats(...args),
+  },
+}));
+
 const stats = {
   total_repositories: 85000,
   total_events: 1200000,
@@ -23,26 +30,13 @@ const stats = {
   growth_metrics: { weekly_growth: 1, monthly_growth: 2, quarterly_growth: 3, repos_this_week: 1, repos_this_month: 2 },
 };
 
-const jsonResponse = (body: unknown) => ({
-  ok: true,
-  status: 200,
-  json: async () => body,
-  text: async () => JSON.stringify(body),
-});
-
-describe('IndiaOverview stats rendering', () => {
+describe('IndiaOverview Firestore-backed stats rendering', () => {
   beforeEach(() => {
-    const fetchMock = jest.fn((url: string | URL | Request) => {
-      const href = String(url);
-      if (href.includes('/india/stats')) {
-        return Promise.resolve(jsonResponse(stats));
-      }
-      return Promise.resolve(jsonResponse({}));
-    });
-    global.fetch = fetchMock as unknown as typeof fetch;
+    mockGetEcosystemStats.mockReset();
+    mockGetEcosystemStats.mockResolvedValue(stats);
   });
 
-  it('renders API-backed metric values', async () => {
+  it('renders Firestore-backed metric values', async () => {
     render(<IndiaOverview year={2024} />);
 
     await waitFor(() => {
@@ -53,10 +47,10 @@ describe('IndiaOverview stats rendering', () => {
     expect(screen.getByText('350,000')).toBeInTheDocument(); // total_stars
   });
 
-  it('renders top states from the API for the selected year', async () => {
+  it('renders top states from Firestore for the selected year', async () => {
     render(<IndiaOverview year={2024} />);
 
-    // Wait for the API-backed table (repo counts only exist in the real data).
+    // Wait for the data-backed table (repo counts only exist in the real data).
     await waitFor(() => {
       expect(screen.getByText('12,000')).toBeInTheDocument();
     });
@@ -65,14 +59,11 @@ describe('IndiaOverview stats rendering', () => {
     expect(screen.getByText('9,500')).toBeInTheDocument();
   });
 
-  it('requests ecosystem stats for the selected year', async () => {
+  it('requests ecosystem stats for the selected year with an AbortSignal', async () => {
     render(<IndiaOverview year={2024} />);
 
     await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith(
-        expect.stringContaining('year=2024'),
-        expect.anything()
-      );
+      expect(mockGetEcosystemStats).toHaveBeenCalledWith(2024, expect.any(AbortSignal));
     });
   });
 });
