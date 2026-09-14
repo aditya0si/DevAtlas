@@ -742,18 +742,28 @@ class TestIndiaAPIRoutes:
 
     @pytest.mark.asyncio
     async def test_ecosystem_scores_respect_year(self, client, db_session):
-        """Ecosystem scores must only count repositories within the requested year."""
+        """Ecosystem scores must only count repositories within the requested year.
+
+        The integration schema is created once per session and rows are not
+        rolled back between tests, so this test seeds state names that no other
+        test uses. Otherwise a repository committed by an earlier test (e.g. the
+        2025 Karnataka repo in ``test_analytics_graphs_respect_year``) legitimately
+        shows up for the requested year and makes the assertion flaky.
+        """
         from app.models.github import GitHubUser, Repository
 
-        owner_2024 = GitHubUser(login="karnataka-2024", github_user_id=7101, type="User", state="Karnataka")
-        owner_2025 = GitHubUser(login="maharashtra-2025", github_user_id=7102, type="User", state="Maharashtra")
+        state_2024 = "Karnataka-Year2024-Filter"
+        state_2025 = "Maharashtra-Year2025-Filter"
+
+        owner_2024 = GitHubUser(login="karnataka-year-2024", github_user_id=7101, type="User", state=state_2024)
+        owner_2025 = GitHubUser(login="maharashtra-year-2025", github_user_id=7102, type="User", state=state_2025)
         repo_2024 = Repository(
             github_id=7103,
             name="app-2024",
-            full_name="garnataka-2024/app-2024",
-            owner_login="karnataka-2024",
-            github_user_login="karnataka-2024",
-            html_url="https://github.com/karnataka-2024/app-2024",
+            full_name="karnataka-year-2024/app-2024",
+            owner_login="karnataka-year-2024",
+            github_user_login="karnataka-year-2024",
+            html_url="https://github.com/karnataka-year-2024/app-2024",
             language="Python",
             stargazers_count=1,
             forks_count=0,
@@ -763,10 +773,10 @@ class TestIndiaAPIRoutes:
         repo_2025 = Repository(
             github_id=7104,
             name="app-2025",
-            full_name="maharashtra-2025/app-2025",
-            owner_login="maharashtra-2025",
-            github_user_login="maharashtra-2025",
-            html_url="https://github.com/maharashtra-2025/app-2025",
+            full_name="maharashtra-year-2025/app-2025",
+            owner_login="maharashtra-year-2025",
+            github_user_login="maharashtra-year-2025",
+            html_url="https://github.com/maharashtra-year-2025/app-2025",
             language="Python",
             stargazers_count=1,
             forks_count=0,
@@ -776,19 +786,19 @@ class TestIndiaAPIRoutes:
         db_session.add_all([owner_2024, owner_2025, repo_2024, repo_2025])
         await db_session.commit()
 
-        # 2024 -> only Karnataka's repo counts
+        # 2024 -> only the 2024 state's repo counts
         resp_2024 = await client.get("/api/v1/india/scores?year=2024")
         assert resp_2024.status_code == 200
         states_2024 = [s["state"] for s in resp_2024.json()]
-        assert "Karnataka" in states_2024
-        assert "Maharashtra" not in states_2024
+        assert state_2024 in states_2024
+        assert state_2025 not in states_2024
 
-        # 2025 -> only Maharashtra's repo counts
+        # 2025 -> only the 2025 state's repo counts
         resp_2025 = await client.get("/api/v1/india/scores?year=2025")
         assert resp_2025.status_code == 200
         states_2025 = [s["state"] for s in resp_2025.json()]
-        assert "Maharashtra" in states_2025
-        assert "Karnataka" not in states_2025
+        assert state_2025 in states_2025
+        assert state_2024 not in states_2025
 
         # Out-of-range year -> 422
         resp_bad = await client.get("/api/v1/india/scores?year=1800")

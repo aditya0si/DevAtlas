@@ -5,16 +5,19 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+import bcrypt
 import jwt
 from jwt.exceptions import InvalidTokenError
-from passlib.context import CryptContext
 from pydantic import BaseModel
 
 from app.core.config import get_settings  # noqa: E402  # noqa: E402  # noqa: E402
 
 settings = get_settings()
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# bcrypt only consumes the first 72 bytes of a password; newer bcrypt releases
+# (>= 4.1 / 5.x) raise instead of silently truncating. Keep the limit in one
+# place so the API can reject oversized inputs before they reach bcrypt.
+MAX_PASSWORD_BYTES = 72
 
 
 class TokenPayload(BaseModel):
@@ -32,11 +35,22 @@ class RefreshTokenData(BaseModel):
 
 
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    encoded = password.encode("utf-8")
+    if len(encoded) > MAX_PASSWORD_BYTES:
+        raise ValueError(f"password cannot be longer than {MAX_PASSWORD_BYTES} bytes")
+    return bcrypt.hashpw(encoded, bcrypt.gensalt()).decode("utf-8")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    encoded = plain_password.encode("utf-8")
+    # Reject oversized candidates before bcrypt so a bad login attempt yields a
+    # clean 401 instead of a 500 from bcrypt's own length check.
+    if len(encoded) > MAX_PASSWORD_BYTES:
+        return False
+    try:
+        return bcrypt.checkpw(encoded, hashed_password.encode("utf-8"))
+    except (ValueError, TypeError):
+        return False
 
 
 def create_access_token(subject: str, expires_delta: Optional[timedelta] = None) -> str:

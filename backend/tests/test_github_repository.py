@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
+import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.github import GitHubEvent, Repository
@@ -106,9 +107,15 @@ async def test_update_classification(db: AsyncSession, sample_repository: Reposi
     assert sample_repository.classification["category"] == "machine-learning"
 
 
-@pytest.fixture
-def sample_repository(db: AsyncSession) -> Repository:
-    """Create a sample repository for testing."""
+@pytest_asyncio.fixture
+async def sample_repository(db: AsyncSession) -> Repository:
+    """Create a sample repository for testing.
+
+    The row is flushed (not committed) so the generated primary key is set and
+    the row is visible to the repository under test, while remaining inside the
+    per-test transaction. ``last_activity_at`` is set because
+    ``get_recent_repositories`` filters on it (a NULL value is never "recent").
+    """
     repository = Repository(
         github_id=888,
         name="sample-repo",
@@ -121,6 +128,8 @@ def sample_repository(db: AsyncSession) -> Repository:
         open_issues_count=2,
         topics=["python"],
         default_branch="main",
+        last_activity_at=datetime.now(timezone.utc),
     )
     db.add(repository)
+    await db.flush()
     return repository

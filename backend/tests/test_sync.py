@@ -90,7 +90,9 @@ class TestSyncAPI:
 
             assert response.status_code == 200
             data = response.json()
-            assert data["message"] == "Full sync enqueued"
+            # The endpoint enqueues the ``run_repo_ingestion`` worker; its
+            # user-facing copy describes that precisely.
+            assert data["message"] == "Full repo ingestion enqueued"
             assert data["job_id"] == "test-job-123"
 
     @pytest.mark.asyncio
