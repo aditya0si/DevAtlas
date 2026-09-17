@@ -57,10 +57,11 @@ jobs:
       # backend/requirements.txt stays the runtime-only lockfile.
       - run: uv pip install pip-audit pytest-cov
       - run: uv run ruff check .
-      # Coverage RATCHET, not a target: 40 is today's honest floor for the backend
-      # suite. Raise --cov-fail-under as tests are added; never lower it to make a
-      # failing run pass. The backend job runs against real Postgres/Redis below.
-      - run: uv run pytest -q --cov=app --cov-report=term-missing --cov-fail-under=40
+      # Coverage RATCHET, not a target: measured 68.27% on the first green CI run
+      # (330 tests), so the floor sits just below the measured value. Raise
+      # --cov-fail-under as tests are added; never lower it to make a failing run pass.
+      # The backend job runs against real Postgres/Redis below.
+      - run: uv run pytest -q --cov=app --cov-report=term-missing --cov-fail-under=65
       - run: uv run pip-audit
 
   frontend:
