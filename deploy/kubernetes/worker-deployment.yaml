@@ -17,9 +17,19 @@ spec:
         app: devatlas
         component: worker
     spec:
+      terminationGracePeriodSeconds: 30
       containers:
         - name: worker
-          image: devatlas/worker:latest
+          image: devatlas/worker:0.1.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            # Base image has no non-root USER, so runAsUser is required for runAsNonRoot to be accepted.
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           env:
             - name: DATABASE_URL
               valueFrom:

@@ -1,9 +1,55 @@
 """Tests for the India Intelligence API endpoints."""
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+
+from app.core.config import get_settings
+
+
+@pytest.fixture(autouse=True)
+def _relax_ai_rate_limits(monkeypatch):
+    """Keep the LLM cost guard out of the way for these endpoint tests.
+
+    Every request here shares a single test-client IP and CI runs against a real
+    Redis, so the production budgets (10/min per IP, 300/day globally) would
+    otherwise throttle the suite. The limiter's own behaviour is covered in
+    tests/test_authz_guards.py.
+    """
+    monkeypatch.setattr(get_settings(), "ai_rate_limit_requests", 100_000)
+    monkeypatch.setattr(get_settings(), "ai_daily_requests", 10_000_000)
+
+
+class StubAIProvider:
+    """Provider double that streams known text (nothing invented)."""
+
+    def __init__(self, text: str = "Stub AI answer.") -> None:
+        self.text = text
+
+    async def stream_text(self, system_prompt: str, user_prompt: str):
+        yield self.text
+
+
+@pytest.fixture
+def stub_ai_provider(monkeypatch) -> StubAIProvider:
+    """Route the AI provider chain to a stub for happy-path copilot tests.
+
+    The shipped chain refuses to fabricate analysis text
+    (``MockAIProvider.stream_text`` raises ``AIUnavailableError``), so a test of
+    the happy path must supply a provider that really streams text.
+    """
+    provider = StubAIProvider()
+    monkeypatch.setattr("app.services.ai_service.AIServiceFactory.get_provider", lambda: provider)
+    return provider
+
+
+def _install_refusing_provider(monkeypatch) -> None:
+    """Install the shipped deterministic provider, which refuses to invent text."""
+    from app.services.ai_service import MockAIProvider
+
+    monkeypatch.setattr("app.services.ai_service.AIServiceFactory.get_provider", lambda: MockAIProvider())
 
 
 class TestInsightService:
@@ -883,20 +929,142 @@ class TestAskDevAtlas:
     """Tests for Ask DevAtlas Copilot endpoints."""
 
     @pytest.mark.asyncio
-    async def test_ask_devatlas_post(self, client, db_session):
-        """Test POST /api/v1/india/ask endpoint."""
+    async def test_ask_devatlas_post(self, client, db_session, stub_ai_provider):
+        """Test POST /api/v1/india/ask endpoint (stubbed provider, real handler)."""
         response = await client.post(
             "/api/v1/india/ask",
             json={"query": "Why is Karnataka growing?"},
         )
         assert response.status_code == 200
         data = response.json()
-        assert "answer" in data
         assert data["query"] == "Why is Karnataka growing?"
+        # The answer is exactly what the provider streamed (nothing invented).
+        assert data["answer"] == stub_ai_provider.text
+        # S-05: confidence is derived from the RAG citations, never a constant.
+        assert "confidence_score" in data
+        assert 0.0 <= data["confidence_score"] <= 1.0
+        assert isinstance(data["citations"], list)
+        if not data["citations"]:
+            assert data["confidence_score"] == 0.0
 
     @pytest.mark.asyncio
-    async def test_ask_devatlas_stream_get(self, client, db_session):
+    async def test_ask_devatlas_stream_get(self, client, db_session, stub_ai_provider):
         """Test GET /api/v1/india/ask/stream endpoint."""
         response = await client.get("/api/v1/india/ask/stream?query=Why+is+Karnataka+growing%3F")
         assert response.status_code == 200
-        assert "text/event-stream" in response.headers.get("content-type", "")
+        assert "text/event-stream" in response.headers.get("content-type", "")
+        assert stub_ai_provider.text in response.text
+        assert "[DONE]" in response.text
+
+    @pytest.mark.asyncio
+    async def test_ask_devatlas_post_reports_missing_provider_honestly(self, client, db_session, monkeypatch):
+        """No provider can answer -> 503, never fabricated analysis text."""
+        _install_refusing_provider(monkeypatch)
+
+        response = await client.post("/api/v1/india/ask", json={"query": "Why is Karnataka growing?"})
+
+        assert response.status_code == 503
+        assert response.json()["detail"] == "No AI provider is configured for this deployment"
+
+    @pytest.mark.asyncio
+    async def test_ask_devatlas_stream_reports_missing_provider_honestly(self, client, db_session, monkeypatch):
+        """No provider can answer -> one SSE error event, then [DONE]; no text."""
+        _install_refusing_provider(monkeypatch)
+
+        response = await client.get("/api/v1/india/ask/stream?query=Why+is+Karnataka+growing%3F")
+
+        assert response.status_code == 200
+        body = response.text
+        assert "No AI provider is configured for this deployment" in body
+        assert body.rstrip().endswith("data: [DONE]")
+        # The refusal is an error event, not streamed analysis text.
+        assert '"text"' not in body
+
+
+class TestCopilotConfidence:
+    """S-05: copilot confidence comes from RAG citation similarities."""
+
+    def test_no_citations_scores_zero(self):
+        from app.api.india import citation_confidence
+
+        assert citation_confidence([]) == 0.0
+
+    def test_confidence_is_the_mean_citation_similarity(self):
+        from app.api.india import citation_confidence
+        from app.services.rag_service import GroundedCitation
+
+        citations = [
+            GroundedCitation(repository_id="1", full_name="devatlas/one", similarity_score=0.4),
+            GroundedCitation(repository_id="2", full_name="devatlas/two", similarity_score=0.6),
+            GroundedCitation(repository_id="3", full_name="devatlas/three", similarity_score=0.8),
+        ]
+
+        assert citation_confidence(citations) == 0.6
+
+    def test_confidence_is_rounded_to_four_decimal_places(self):
+        from app.api.india import citation_confidence
+        from app.services.rag_service import GroundedCitation
+
+        citations = [
+            GroundedCitation(repository_id="1", full_name="devatlas/one", similarity_score=0.123456),
+            GroundedCitation(repository_id="2", full_name="devatlas/two", similarity_score=0.654321),
+        ]
+
+        assert citation_confidence(citations) == 0.3889
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "scores,expected_confidence",
+        [
+            pytest.param([0.4, 0.6, 0.8], 0.6, id="three-citations"),
+            pytest.param([0.95], 0.95, id="single-citation"),
+            pytest.param([], 0.0, id="no-citations"),
+        ],
+    )
+    async def test_ask_response_confidence_matches_citations(self, monkeypatch, scores, expected_confidence):
+        """The non-streaming handler reports the citation mean (no database needed)."""
+        from app.api import india as india_module
+        from app.services.rag_service import GroundedCitation, RAGContextResult
+
+        citations = [
+            GroundedCitation(repository_id=str(index), full_name=f"devatlas/repo-{index}", similarity_score=score)
+            for index, score in enumerate(scores)
+        ]
+
+        class FakeChatRepository:
+            def __init__(self, db):  # noqa: ARG002 - mirrors the real signature
+                pass
+
+            async def get_session(self, session_id):
+                return None
+
+            async def create_session(self, title=None):
+                return SimpleNamespace(id="session-1", messages=[])
+
+            async def add_message(self, *args, **kwargs):
+                return None
+
+        class FakeRAGService:
+            def __init__(self, db, *args, **kwargs):
+                pass
+
+            async def retrieve_context(self, query, top_k=5):
+                return RAGContextResult(query=query, formatted_context="stub context", citations=citations)
+
+        class FakeProvider:
+            async def stream_text(self, system_prompt, user_prompt):
+                yield "Grounded answer."
+
+        class FakeDB:
+            async def commit(self):
+                return None
+
+        monkeypatch.setattr("app.repositories.chat_repository.ChatRepository", FakeChatRepository)
+        monkeypatch.setattr("app.services.rag_service.RAGService", FakeRAGService)
+        monkeypatch.setattr("app.services.ai_service.AIServiceFactory.get_provider", lambda: FakeProvider())
+
+        result = await india_module.ask_devatlas(request={"query": "Why is Karnataka growing?"}, db=FakeDB())
+
+        assert result["answer"] == "Grounded answer."
+        assert result["confidence_score"] == expected_confidence
+        assert len(result["citations"]) == len(citations)

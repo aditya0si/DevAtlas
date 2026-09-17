@@ -18,7 +18,7 @@ prometheus-client==0.20.0
 pytest==9.0.3
 pytest-asyncio==1.4.0
 ruff==0.5.5
-tenacity>=8.2.0
-croniter>=2.0.0
-aiosqlite>=0.20.0
-google-genai>=0.2.0
+tenacity==9.1.4
+croniter==6.2.4
+aiosqlite==0.22.1
+google-genai==1.2.0

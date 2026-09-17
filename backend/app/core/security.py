@@ -11,7 +11,7 @@ import jwt
 from jwt.exceptions import InvalidTokenError
 from pydantic import BaseModel
 
-from app.core.config import get_settings  # noqa: E402  # noqa: E402  # noqa: E402
+from app.core.config import get_settings
 
 settings = get_settings()
 

@@ -35,9 +35,19 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 async_session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
-QUERY = (
-    "location:India OR location:Bangalore OR location:Mumbai OR location:Delhi "
-    "OR location:Pune OR location:Hyderabad OR location:Chennai"
+# GitHub's Search API rejects a query with more than five AND/OR/NOT operators
+# ("422 Validation Failed: More than five AND / OR / NOT operators were used"), and the
+# original single query here used six `OR location:...` clauses, so seeding could never
+# succeed. Search one location per query and merge the results instead.
+SEARCH_QUERIES = (
+    "location:India",
+    "location:Bangalore",
+    "location:Bengaluru",
+    "location:Mumbai",
+    "location:Delhi",
+    "location:Pune",
+    "location:Hyderabad",
+    "location:Chennai",
 )
 MIN_STARS = 10
 DEFAULT_LIMIT = 1000
@@ -89,10 +99,23 @@ async def fetch_repositories(limit: int = DEFAULT_LIMIT, min_stars: int = MIN_ST
 
             repo_repo = GitHubRepository(db)
             buffer: list[Repository] = []
-            query = f"{QUERY} stars:>={min_stars}"
 
-            logger.info(f"Fetching repos from GitHub Search: {query}")
-            async for item in client.search_repositories(query=query, sort="stars", order="desc"):
+            async def _iter_search():
+                """Yield search results across the per-location queries, de-duplicated."""
+                seen: set[int] = set()
+                for location_query in SEARCH_QUERIES:
+                    query = f"{location_query} stars:>={min_stars}"
+                    logger.info(f"Fetching repos from GitHub Search: {query}")
+                    async for result in client.search_repositories(
+                        query=query, sort="stars", order="desc"
+                    ):
+                        github_id = result.get("id")
+                        if github_id in seen:
+                            continue
+                        seen.add(github_id)
+                        yield result
+
+            async for item in _iter_search():
                 if total >= limit:
                     break
 

@@ -4,6 +4,13 @@ import { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { Sparkles, X, ChevronRight, Loader2, Bot, ExternalLink, Star } from 'lucide-react';
 import { api } from '@/lib/api';
+import { cn } from '@/lib/utils';
+import {
+  ApiUnavailableNotice,
+  canCallApiMethod,
+  isApiUnavailableError,
+  useApiUnavailable,
+} from './ui/ApiUnavailable';
 
 interface Citation {
   repository_id: string;
@@ -26,6 +33,11 @@ export default function AskDevAtlas({ query, onClose, sessionId, onSessionChange
   const [isStreaming, setIsStreaming] = useState(true);
   const [citations, setCitations] = useState<Citation[]>([]);
 
+  // The copilot streams from the DevAtlas server. In the Firestore-only build
+  // there is no stream at all, so the panel says so instead of reporting a
+  // connection error while showing a "LIVE ANALYSIS" badge.
+  const { unavailable, markUnavailable } = useApiUnavailable(canCallApiMethod(api.streamAskDevAtlas));
+
   // Keep the latest session id and callback in refs so the streaming effect can
   // read the current value without re-running (which would restart the stream).
   // This preserves conversational session continuity across turns while keeping
@@ -42,7 +54,7 @@ export default function AskDevAtlas({ query, onClose, sessionId, onSessionChange
   }, [onSessionChange]);
 
   useEffect(() => {
-    if (!query) return;
+    if (!query || unavailable) return;
     setResponse('');
     setCitations([]);
     setIsStreaming(true);
@@ -55,9 +67,14 @@ export default function AskDevAtlas({ query, onClose, sessionId, onSessionChange
       () => {
         setIsStreaming(false);
       },
-      () => {
+      (error) => {
         setIsStreaming(false);
-        setResponse((prev) => prev || 'Unable to connect to DevAtlas AI stream.');
+        if (isApiUnavailableError(error)) {
+          // Not a transient failure: this build has no copilot endpoint.
+          markUnavailable();
+          return;
+        }
+        setResponse((prev) => prev || 'The DevAtlas copilot is unavailable right now. Please try again later.');
       },
       (newSessionId) => {
         sessionIdRef.current = newSessionId;
@@ -72,7 +89,7 @@ export default function AskDevAtlas({ query, onClose, sessionId, onSessionChange
     return () => {
       closeStream();
     };
-  }, [query]);
+  }, [query, unavailable, markUnavailable]);
 
   return (
     <motion.div
@@ -104,7 +121,12 @@ export default function AskDevAtlas({ query, onClose, sessionId, onSessionChange
         </h4>
 
         <div className="prose prose-invert prose-sm relative z-10 text-slate-300 leading-relaxed max-h-[350px] overflow-y-auto pr-2 custom-scrollbar">
-          {response ? (
+          {unavailable ? (
+            <ApiUnavailableNotice
+              subject="The DevAtlas copilot"
+              detail="Answers are streamed from the DevAtlas server, which this build does not include. Firestore-backed map and stats data remain available."
+            />
+          ) : response ? (
             <div className="whitespace-pre-wrap">{response}</div>
           ) : (
             <div className="flex items-center gap-2 text-indigo-300 py-4">
@@ -139,8 +161,13 @@ export default function AskDevAtlas({ query, onClose, sessionId, onSessionChange
 
         <div className="mt-6 flex items-center justify-between border-t border-white/10 pt-4 relative z-10">
           <div className="flex items-center gap-2">
-            <span className="px-2.5 py-1 bg-emerald-500/10 border border-emerald-500/20 rounded-full text-[10px] text-emerald-400 font-bold tracking-wide">
-              {isStreaming ? 'STREAMING...' : 'LIVE ANALYSIS'}
+            <span className={cn(
+              'px-2.5 py-1 border rounded-full text-[10px] font-bold tracking-wide',
+              unavailable
+                ? 'bg-amber-500/10 border-amber-500/20 text-amber-300'
+                : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
+            )}>
+              {unavailable ? 'NEEDS API' : isStreaming ? 'STREAMING…' : 'ANALYSIS COMPLETE'}
             </span>
           </div>
         </div>

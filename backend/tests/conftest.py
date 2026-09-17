@@ -4,16 +4,26 @@ import os
 from collections.abc import AsyncGenerator
 from uuid import uuid4
 
-import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
-from sqlalchemy import NullPool
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
+# The production rate limiter counts every request from one client IP, and the whole suite shares a
+# single ASGI test client — so once the limiter genuinely throttles (S-02), the suite trips its own
+# 60/min budget and hundreds of unrelated tests fail with 429. Per-test key cleanup is not reliable
+# enough for that. Disable the *global* limit for the test process here, BEFORE app.main is imported
+# (the middleware reads settings at construction), and let tests/test_rate_limit.py keep testing the
+# limiter itself — it sets its own tiny limit and rebuilds the app for that purpose.
+os.environ.setdefault("RATE_LIMIT_REQUESTS", "1000000")
+os.environ.setdefault("AI_DAILY_REQUESTS", "1000000")
+os.environ.setdefault("AI_RATE_LIMIT_REQUESTS", "1000000")
 
-from app.core.database import Base, get_db
-from app.core.security import hash_password
-from app.main import app
-from app.models import User
+import pytest_asyncio  # noqa: E402
+from httpx import ASGITransport, AsyncClient  # noqa: E402
+from sqlalchemy import NullPool  # noqa: E402
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine  # noqa: E402
+from sqlalchemy.orm import sessionmaker  # noqa: E402
+
+from app.core.database import Base, get_db  # noqa: E402
+from app.core.security import hash_password  # noqa: E402
+from app.main import app  # noqa: E402
+from app.models import User  # noqa: E402
 
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL",
@@ -95,6 +105,9 @@ async def _reset_rate_limiter() -> AsyncGenerator[None, None]:
     request issued through the shared test client. The tests are independent,
     so a suite must not inherit another test's request budget. Only the
     limiter's own keys are removed; production limits are left untouched.
+
+    ``app.core.redis`` caches its client per event loop (see that module), so
+    this also works when the previous test ran on a different loop.
     """
     if _redis_available:
         try:

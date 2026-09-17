@@ -31,6 +31,22 @@
         { "fieldPath": "city", "order": "ASCENDING" },
         { "fieldPath": "followers", "order": "DESCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "repositories",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "classified", "order": "ASCENDING" },
+        { "fieldPath": "classification_attempts", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "repositories",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "geocoded", "order": "ASCENDING" },
+        { "fieldPath": "geocode_attempts", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

@@ -6,7 +6,7 @@ import {
   Map, BarChart3, GitCompare, Compass, Search, FolderGit2, Settings, HelpCircle, 
   Sparkles, X, ChevronRight, Layers, Filter, ZoomIn, ZoomOut, Maximize2, Info, 
   TrendingUp, Users, Code2, Globe, Activity, Bell, User, Hexagon, Moon, Crosshair, 
-  ChevronLeft, ChevronRight as ChevronRightIcon, Play, FastForward, PlayCircle, LogIn, LogOut, Loader2,
+  ChevronLeft, ChevronRight as ChevronRightIcon, Play, FastForward, PlayCircle, LogIn, LogOut,
   Pause, SkipForward, Square
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -21,6 +21,7 @@ import CompareStates from '@/components/CompareStates';
 import { useAuth } from '@/context/AuthContext';
 import { api, EcosystemStats } from '@/lib/api';
 import { getCurrentYear, getMaxSelectableYear, MIN_SELECTABLE_YEAR } from '@/lib/dates';
+import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
 
 const DeveloperMap = dynamic(() => import('@/components/DeveloperMap'), { ssr: false });
 
@@ -68,7 +69,8 @@ function deriveTickerItems(stats: EcosystemStats | null): string[] {
 
 /**
  * Developer Pulse percentages derived from API-backed stats. Null until real
- * stats arrive, so the panel can stay hidden (no invented numbers).
+ * stats arrive, so the panel can stay hidden (no invented numbers). These are
+ * SHARES of the tracked corpus, not growth rates — the labels say so.
  */
 function deriveDeveloperPulse(stats: EcosystemStats | null): { ai: number; cybersecurity: number } | null {
   if (!stats || stats.total_repositories <= 0) return null;
@@ -105,6 +107,8 @@ export default function ImmersiveHome() {
   const [introStep, setIntroStep] = useState(0);
   const [showIntro, setShowIntro] = useState(true);
   const [mapLoaded, setMapLoaded] = useState(false);
+  const [dataSourceAnswered, setDataSourceAnswered] = useState(false);
+  const introPlayedRef = useRef(false);
   const mapRef = useRef<DeveloperMapRef | null>(null);
 
   // Ask DevAtlas State
@@ -138,20 +142,41 @@ export default function ImmersiveHome() {
   ];
 
   useEffect(() => {
-    if (!mapLoaded) return;
-    
+    // The intro must never hold the page hostage: play it once the map reports
+    // in OR as soon as the data source answers (an empty/unconfigured build
+    // still has to show its hero, map shell and "no data yet" state).
+    if (!mapLoaded && !dataSourceAnswered) return;
+    if (introPlayedRef.current) return;
+    introPlayedRef.current = true;
+
+    let cancelled = false;
+    const timeouts: ReturnType<typeof setTimeout>[] = [];
+
     const sequence = async () => {
       for (let i = 0; i < introMessages.length; i++) {
+        if (cancelled) return;
         setIntroStep(i);
-        await new Promise(r => setTimeout(r, 800));
+        await new Promise<void>((resolve) => {
+          timeouts.push(setTimeout(resolve, 800));
+        });
       }
+      if (cancelled) return;
       setShowIntro(false);
-      setTimeout(() => {
-        mapRef.current?.flyTo([78.9629, 20.5937], 4.5, 55, -15);
-      }, 1000);
+      timeouts.push(
+        setTimeout(() => {
+          if (!cancelled) {
+            mapRef.current?.flyTo([78.9629, 20.5937], 4.5, 55, -15);
+          }
+        }, 1000)
+      );
     };
     sequence();
-  }, [mapLoaded, introMessages.length]);
+
+    return () => {
+      cancelled = true;
+      timeouts.forEach((timeout) => clearTimeout(timeout));
+    };
+  }, [mapLoaded, dataSourceAnswered, introMessages.length]);
 
   // Poll seed status until data is ready
   useEffect(() => {
@@ -166,6 +191,10 @@ export default function ImmersiveHome() {
       } catch {
         // backend might not be up yet, or the request was aborted on unmount;
         // default to showing UI either way
+      } finally {
+        // Any answer (or failure) means the data source has responded — the
+        // intro no longer needs to wait for the map.
+        if (!cancelled) setDataSourceAnswered(true);
       }
     };
     check();
@@ -188,6 +217,9 @@ export default function ImmersiveHome() {
       })
       .catch(() => {
         // keep previous/placeholder stats if the backend is unavailable
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setDataSourceAnswered(true);
       });
     return () => {
       controller.abort();
@@ -197,6 +229,12 @@ export default function ImmersiveHome() {
   // Live ticker + Developer Pulse content derived purely from API-backed stats
   const tickerItems = deriveTickerItems(ecosystemStats);
   const developerPulse = deriveDeveloperPulse(ecosystemStats);
+
+  // Explicit "no data yet" condition: the seed sync reports nothing, or the
+  // ecosystem stats came back empty. The page stays fully usable either way.
+  const noData =
+    !seedStatus.ready ||
+    (ecosystemStats !== null && (ecosystemStats.total_repositories ?? 0) === 0);
 
   const handleAskDevAtlas = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && searchQuery.trim() !== '') {
@@ -387,31 +425,24 @@ export default function ImmersiveHome() {
         )}
       </AnimatePresence>
 
-      {/* Seed Data Interstitial (shown when DB is empty) */}
+      {/* No-data notice — non-blocking. The hero, map shell and dock stay usable;
+          there is no fake progress bar and no endless "preparing" overlay. */}
       <AnimatePresence>
-        {!seedStatus.ready && !showIntro && (
+        {noData && (
           <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="absolute inset-0 z-50 flex items-center justify-center bg-slate-950/90 backdrop-blur-sm"
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 10 }}
+            data-testid="no-data-notice"
+            role="status"
+            className="absolute bottom-32 left-1/2 -translate-x-1/2 z-20 w-full max-w-md px-4 pointer-events-none"
           >
-            <div className="glass-premium rounded-3xl p-8 max-w-md text-center border border-indigo-500/30 shadow-2xl">
-              <Loader2 className="w-10 h-10 text-indigo-400 animate-spin mx-auto mb-4" />
-              <h2 className="text-xl font-bold text-white mb-2">Preparing Your Experience</h2>
-              <p className="text-slate-400 text-sm mb-4">
-                We\u2019re seeding India\u2019s top developer datasets for your first visit. This may take a moment...
-              </p>
-              <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
-                <motion.div
-                  className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 rounded-full"
-                  initial={{ width: "0%" }}
-                  animate={{ width: "60%" }}
-                  transition={{ duration: 15, ease: "easeOut" }}
-                />
-              </div>
-              <p className="text-xs text-slate-500 mt-3">
-                {seedStatus.total_repos > 0 ? `${seedStatus.total_repos} repos loaded so far...` : 'Connecting to GitHub...'}
+            <div className="glass-panel rounded-2xl px-4 py-3 border border-amber-500/30 text-center pointer-events-auto">
+              <p className="text-xs font-semibold text-amber-200">No data yet</p>
+              <p className="mt-1 text-[11px] text-slate-400">
+                {seedStatus.total_repos > 0
+                  ? `${seedStatus.total_repos.toLocaleString('en-US')} repositories synced so far — waiting for the first full sync.`
+                  : "This build's data source has no repositories yet. The map and statistics fill in automatically once the Firestore sync publishes data."}
               </p>
             </div>
           </motion.div>
@@ -425,13 +456,15 @@ export default function ImmersiveHome() {
         transition={{ duration: 2 }}
         className="absolute inset-0 z-0"
       >
-        <DeveloperMap 
-          onReady={(actions) => { mapRef.current = actions; }}
-          activeFilter={activeFilter} 
-          year={currentYear}
-          onRepositoryClick={(repoId) => setSelectedRepoId(repoId)}
-          onMapLoad={() => setMapLoaded(true)} 
-        />
+        <ErrorBoundary label="Developer map">
+          <DeveloperMap 
+            onReady={(actions) => { mapRef.current = actions; }}
+            activeFilter={activeFilter} 
+            year={currentYear}
+            onRepositoryClick={(repoId) => setSelectedRepoId(repoId)}
+            onMapLoad={() => setMapLoaded(true)} 
+          />
+        </ErrorBoundary>
       </motion.div>
 
       {/* Top Navigation: Ask DevAtlas + Auth */}
@@ -569,16 +602,16 @@ export default function ImmersiveHome() {
               <div className="space-y-4">
                 <div className="flex justify-between items-center group cursor-pointer hover:bg-white/5 p-2 -mx-2 rounded-xl transition-colors">
                   <div>
-                    <div className="text-xs text-slate-400 mb-1">AI Growth</div>
-                    <div className="text-2xl font-bold text-white group-hover:text-[#8B5CF6] transition-colors">+{developerPulse.ai.toFixed(1)}%</div>
+                    <div className="text-xs text-slate-400 mb-1">AI repos (share of tracked)</div>
+                    <div className="text-2xl font-bold text-white group-hover:text-[#8B5CF6] transition-colors">{developerPulse.ai.toFixed(1)}%</div>
                   </div>
                   <Activity className="text-[#8B5CF6] opacity-40 group-hover:opacity-100 transition-all group-hover:scale-110" size={24} />
                 </div>
                 
                 <div className="flex justify-between items-center group cursor-pointer hover:bg-white/5 p-2 -mx-2 rounded-xl transition-colors">
                   <div>
-                    <div className="text-xs text-slate-400 mb-1">Cybersecurity</div>
-                    <div className="text-2xl font-bold text-white group-hover:text-[#4F8BFF] transition-colors">+{developerPulse.cybersecurity.toFixed(1)}%</div>
+                    <div className="text-xs text-slate-400 mb-1">Cybersecurity repos (share of tracked)</div>
+                    <div className="text-2xl font-bold text-white group-hover:text-[#4F8BFF] transition-colors">{developerPulse.cybersecurity.toFixed(1)}%</div>
                   </div>
                   <Code2 className="text-[#4F8BFF] opacity-40 group-hover:opacity-100 transition-all group-hover:scale-110" size={24} />
                 </div>
@@ -621,6 +654,9 @@ export default function ImmersiveHome() {
                     {storyPaused ? 'Story Mode Paused' : 'Story Mode Playing'}
                   </div>
                   <div className="text-lg sm:text-xl font-bold text-white truncate">{storyTitle}</div>
+                  <div className="text-[10px] text-slate-500 truncate">
+                    Illustrative tour — editorial titles, not measured rankings
+                  </div>
                 </div>
               </div>
 

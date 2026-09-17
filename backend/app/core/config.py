@@ -44,8 +44,15 @@ class Settings(BaseSettings):
     embedding_model: str = "text-embedding-3-small"
     embedding_dimensions: int = 1536
 
+    # Documented development default. Production startup refuses this value:
+    # see ``app.main.validate_production_security`` (environment=production).
     jwt_secret_key: str = "change-me"
     jwt_algorithm: str = "HS256"
+
+    # Admin/LLM route protection and budgets (consumed by app/api/deps.py).
+    admin_api_key: Optional[str] = None
+    ai_rate_limit_requests: int = 10
+    ai_daily_requests: int = 300
 
     access_token_expire_minutes: int = 30
     refresh_token_expire_minutes: int = 60 * 24 * 7
