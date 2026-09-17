@@ -1,0 +1,11 @@
+# Build-context exclusions for the backend image (backend/Dockerfile does `COPY . .`,
+# so without this file backend/.env and local venvs would be baked into the image).
+.git
+.venv*
+node_modules
+__pycache__
+*.pyc
+.env*
+.pytest_cache
+frontend/out
+tests/

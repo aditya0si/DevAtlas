@@ -2,9 +2,23 @@ name: Sync Indian GitHub Developers
 
 on:
   schedule:
-    # Every 5 minutes (GitHub Actions minimum interval)
-    - cron: '*/5 * * * *'
+    # Every 2 hours. A tighter schedule is not honest on GitHub-hosted runners:
+    # `*/5 * * * *` is throttled hard (measured on this repo: 40 runs over 6
+    # days, median gap 200 minutes), so the cron states what actually runs.
+    - cron: '0 */2 * * *'
   workflow_dispatch: # Manual trigger for testing
+
+# Never let two syncs overlap: the worker writes Firestore documents and calls
+# the GitHub + Nominatim APIs, and overlapping runs would double that load
+# (and break the Nominatim 1 request/second policy).
+concurrency:
+  group: devatlas-india-sync
+  cancel-in-progress: false
+
+# The worker only reads the checked-out repository; the credentials it uses
+# come from secrets, not from the workflow GITHUB_TOKEN.
+permissions:
+  contents: read
 
 jobs:
   sync:
@@ -21,6 +35,9 @@ jobs:
         run: |
           cd scripts/firebase-sync
           npm install
+
+      - name: Verify activity + aggregate helpers
+        run: node --test scripts/firebase-sync/activity.test.js
 
       - name: Run India GitHub sync
         env:

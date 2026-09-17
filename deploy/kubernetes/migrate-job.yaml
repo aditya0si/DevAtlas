@@ -1,0 +1,46 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: devatlas-migrate
+  labels:
+    app: devatlas
+    component: migrate
+# DEPLOY-PIPELINE CONTRACT: apply this Job and wait for it to complete BEFORE
+# rolling the devatlas-backend / devatlas-worker Deployments. Migrations run
+# exactly once here, instead of racing on startup across N replicas.
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app: devatlas
+        component: migrate
+    spec:
+      restartPolicy: OnFailure
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: migrate
+          image: devatlas/backend:0.1.0
+          imagePullPolicy: IfNotPresent
+          command: ["alembic", "upgrade", "head"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: devatlas-secrets
+                  key: database-url
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL

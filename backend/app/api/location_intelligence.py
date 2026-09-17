@@ -2,14 +2,14 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db
+from app.api.deps import enforce_ai_rate_limit, get_db
 from app.schemas.github import GitHubUserResponse
 from app.services.location_intelligence_service import LocationIntelligenceService
 
 router = APIRouter()
 
 
-@router.post("/enrich/{login}", response_model=GitHubUserResponse)
+@router.post("/enrich/{login}", response_model=GitHubUserResponse, dependencies=[Depends(enforce_ai_rate_limit)])
 async def enrich_user_location(
     login: str,
     db: AsyncSession = Depends(get_db),

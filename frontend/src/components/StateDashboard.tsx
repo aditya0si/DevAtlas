@@ -9,6 +9,12 @@ import {
 import { cn } from '@/lib/utils';
 import { api, EcosystemStats, StateDashboardData } from '@/lib/api';
 import { getCurrentYear } from '@/lib/dates';
+import {
+  ApiUnavailableNotice,
+  canCallApiMethod,
+  isApiUnavailableError,
+  useApiUnavailable,
+} from './ui/ApiUnavailable';
 
 interface StateSummary {
   state: string;
@@ -60,6 +66,13 @@ const StateDashboard = ({ year = getCurrentYear() }: { year?: number }) => {
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // The per-state dashboard is a server-side aggregate. In the Firestore-only
+  // build the stub rejects, so the detail pane says so instead of showing a
+  // generic "something went wrong".
+  const { unavailable: detailUnavailable, markUnavailable: markDetailUnavailable } = useApiUnavailable(
+    canCallApiMethod(api.getStateDashboard)
+  );
+
   // Load the real top-states list for the selected year.
   useEffect(() => {
     const controller = new AbortController();
@@ -96,6 +109,13 @@ const StateDashboard = ({ year = getCurrentYear() }: { year?: number }) => {
       return;
     }
 
+    // No dead call: in this build the detail endpoint can never answer.
+    if (detailUnavailable) {
+      setDashboard(null);
+      setDetailLoading(false);
+      return;
+    }
+
     const controller = new AbortController();
     let cancelled = false;
     setDetailLoading(true);
@@ -107,6 +127,13 @@ const StateDashboard = ({ year = getCurrentYear() }: { year?: number }) => {
       })
       .catch((err) => {
         if (err?.name === 'AbortError') return;
+        if (isApiUnavailableError(err)) {
+          // Escalate to the explicit "needs API" state — do not reuse the
+          // generic error banner (that would hide the working state list).
+          setDashboard(null);
+          markDetailUnavailable();
+          return;
+        }
         if (!cancelled) setError(err?.message || 'Failed to load state dashboard');
       })
       .finally(() => {
@@ -117,7 +144,7 @@ const StateDashboard = ({ year = getCurrentYear() }: { year?: number }) => {
       cancelled = true;
       controller.abort();
     };
-  }, [selectedState, year]);
+  }, [selectedState, year, detailUnavailable, markDetailUnavailable]);
 
   return (
     <div className="grid lg:grid-cols-2 gap-6">
@@ -155,9 +182,17 @@ const StateDashboard = ({ year = getCurrentYear() }: { year?: number }) => {
       </div>
       
       <div className="space-y-6">
-        {detailLoading ? (
+        {detailLoading && !detailUnavailable ? (
           <div className="rounded-2xl bg-slate-800/50 border border-slate-700 p-6 flex justify-center py-16">
             <Loader2 className="w-6 h-6 text-indigo-400 animate-spin" />
+          </div>
+        ) : detailUnavailable && selectedState ? (
+          <div className="rounded-2xl bg-slate-800/50 border border-slate-700 p-6">
+            <h3 className="text-lg font-semibold text-white mb-3">{selectedState}</h3>
+            <ApiUnavailableNotice
+              subject="The state dashboard"
+              detail={`Detailed metrics for ${selectedState} are aggregated server-side. The state list on the left is real Firestore data and stays usable.`}
+            />
           </div>
         ) : dashboard ? (
           <motion.div

@@ -16,6 +16,7 @@ jest.mock('firebase/firestore', () => ({
 jest.mock('@/lib/firebase', () => ({ db: {} }));
 
 import { collection, getDocs, doc, getDoc, query, where, orderBy, limit } from 'firebase/firestore';
+import { MAX_CLIENT_READ_LIMIT } from '../firestoreApi';
 
 const mockCollection = collection as jest.Mock;
 const mockGetDocs = getDocs as jest.Mock;
@@ -48,9 +49,59 @@ const missingDocument = () => ({
 /** Resolve getDocs for a named collection, defaulting to an empty snapshot. */
 const respondWithCollection = (byName: Record<string, Array<{ id: string; data?: Record<string, any> }>>) => {
   mockGetDocs.mockImplementation(async (q: any) => {
-    const name = q?.__query?.[0]?.__collection;
+    const name = collectionOf(q) ?? '';
     return snapshotOf(byName[name] || []);
   });
+};
+
+/** Resolve getDoc for `<collection>/<id>` paths, defaulting to "missing". */
+const respondWithDocuments = (byPath: Record<string, Record<string, any>>) => {
+  mockGetDoc.mockImplementation(async (ref: any) => {
+    const [coll, id] = ref?.__doc ?? [];
+    const data = byPath[`${coll}/${id}`];
+    return data ? documentOf(id, data) : missingDocument();
+  });
+};
+
+const collectionOf = (q: any): string | undefined => q?.__query?.[0]?.__collection;
+const constraintsOf = (q: any): Array<Record<string, any>> =>
+  (q?.__query ?? []).filter((part: any) => part && part.__constraint);
+
+/** Every collection query recorded so far, with its collection name + constraints. */
+const recordedQueries = () =>
+  mockGetDocs.mock.calls.map(([q]: any[]) => ({
+    name: collectionOf(q),
+    constraints: constraintsOf(q),
+  }));
+
+/** Contract from BOARD.md — written by the sync worker (agent A5). */
+const ECOSYSTEM_AGGREGATE = {
+  total_repositories: 4200,
+  total_developers: 900,
+  total_stars: 12000,
+  total_forks: 800,
+  top_languages: [
+    { language: 'Python', count: 1500 },
+    { language: 'TypeScript', count: 900 },
+  ],
+  top_domains: [
+    { domain: 'ai', count: 600 },
+    { domain: 'web', count: 500 },
+  ],
+  ai_repo_percentage: 14.29,
+  generated_at: '2026-09-18T00:00:00Z',
+  version: 3,
+};
+
+const COVERAGE_AGGREGATE = {
+  users_total: 900,
+  users_enriched: 640,
+  users_with_location: 610,
+  repos_total: 4200,
+  repos_with_location: 3100,
+  avg_geocoding_confidence: 0.82,
+  generated_at: '2026-09-18T00:00:00Z',
+  version: 3,
 };
 
 describe('api Firestore data layer', () => {
@@ -68,43 +119,176 @@ describe('api Firestore data layer', () => {
     mockGetDoc.mockResolvedValue(missingDocument());
   });
 
-  it('derives ecosystem stats from the Firestore repositories and developers collections', async () => {
-    respondWithCollection({
-      repositories: [
-        { id: '1', data: { language: 'Python', domain: 'ai', city: 'Bengaluru', stars: 10, forks: 2 } },
-        { id: '2', data: { language: 'Python', domain: 'web', city: 'Mumbai', stars: 5, forks: 1 } },
-      ],
-      developers: [{ id: 'd1' }, { id: 'd2' }],
+  // ── Aggregate fast path (S-06) ────────────────────────────────────────────
+
+  describe('aggregate documents', () => {
+    it('reads stats/ecosystem as a single document instead of scanning repositories', async () => {
+      respondWithDocuments({ 'stats/ecosystem': ECOSYSTEM_AGGREGATE });
+
+      const stats = await api.getEcosystemStats(2024);
+
+      expect(mockDoc).toHaveBeenCalledWith({}, 'stats', 'ecosystem');
+      expect(mockGetDoc).toHaveBeenCalledTimes(1);
+      expect(mockGetDocs).not.toHaveBeenCalled();
+      expect(stats.estimated).toBe(false);
     });
 
-    const stats = await api.getEcosystemStats(2024);
+    it('maps the stats/ecosystem contract onto EcosystemStats', async () => {
+      respondWithDocuments({ 'stats/ecosystem': ECOSYSTEM_AGGREGATE });
 
-    expect(mockCollection).toHaveBeenCalledWith({}, 'repositories');
-    expect(mockCollection).toHaveBeenCalledWith({}, 'developers');
-    expect(stats.total_repositories).toBe(2);
-    expect(stats.total_developers).toBe(2);
-    expect(stats.active_developers).toBe(2);
-    expect(stats.total_stars).toBe(15);
-    expect(stats.total_forks).toBe(3);
-    expect(stats.top_language).toBe('Python');
-    expect(stats.top_state).toBe('Bengaluru');
-    expect(stats.top_states[0]).toEqual({ state: 'Bengaluru', repositories: 1, rank: 1 });
-    expect(stats.ai_repos_count).toBe(1);
-    expect(stats.ai_repo_percentage).toBe(50);
+      const stats = await api.getEcosystemStats();
+
+      expect(stats.total_repositories).toBe(4200);
+      expect(stats.total_developers).toBe(900);
+      expect(stats.active_developers).toBe(900);
+      expect(stats.total_stars).toBe(12000);
+      expect(stats.total_forks).toBe(800);
+      expect(stats.ai_repo_percentage).toBe(14.29);
+      expect(stats.top_language).toBe('Python');
+      expect(stats.top_languages).toEqual([
+        { language: 'Python', count: 1500 },
+        { language: 'TypeScript', count: 900 },
+      ]);
+      expect(stats.top_domains).toEqual([
+        { domain: 'ai', count: 600 },
+        { domain: 'web', count: 500 },
+      ]);
+      expect(stats.ai_repos_count).toBe(600);
+      expect(stats.web_repos_count).toBe(500);
+      expect(stats.cybersecurity_repos_count).toBe(0);
+      expect(stats.generated_at).toBe('2026-09-18T00:00:00Z');
+    });
+
+    it('reads stats/coverage as a single document for coverage stats', async () => {
+      respondWithDocuments({ 'stats/coverage': COVERAGE_AGGREGATE });
+
+      const coverage = await api.getCoverageStats();
+
+      expect(mockDoc).toHaveBeenCalledWith({}, 'stats', 'coverage');
+      expect(mockGetDocs).not.toHaveBeenCalled();
+      expect(coverage.users_total).toBe(900);
+      expect(coverage.users_with_location).toBe(610);
+      expect(coverage.repos_total).toBe(4200);
+      expect(coverage.avg_geocoding_confidence).toBe(0.82);
+      expect(coverage.estimated).toBe(false);
+    });
+
+    it('flags the ecosystem fallback as estimated and keeps the query bounded', async () => {
+      respondWithCollection({
+        repositories: [
+          { id: '1', data: { language: 'Python', domain: 'ai', city: 'Bengaluru', stars: 10, forks: 2 } },
+          { id: '2', data: { language: 'Python', domain: 'web', city: 'Mumbai', stars: 5, forks: 1 } },
+        ],
+        developers: [{ id: 'd1' }, { id: 'd2' }],
+      });
+
+      const stats = await api.getEcosystemStats(2024);
+
+      // Aggregate doc was attempted first, then the fallback kicked in.
+      expect(mockDoc).toHaveBeenCalledWith({}, 'stats', 'ecosystem');
+      expect(mockCollection).toHaveBeenCalledWith({}, 'repositories');
+      expect(mockCollection).toHaveBeenCalledWith({}, 'developers');
+      expect(stats.total_repositories).toBe(2);
+      expect(stats.total_developers).toBe(2);
+      expect(stats.active_developers).toBe(2);
+      expect(stats.total_stars).toBe(15);
+      expect(stats.total_forks).toBe(3);
+      expect(stats.top_language).toBe('Python');
+      expect(stats.top_state).toBe('Bengaluru');
+      expect(stats.top_states[0]).toEqual({ state: 'Bengaluru', repositories: 1, rank: 1 });
+      expect(stats.ai_repos_count).toBe(1);
+      expect(stats.ai_repo_percentage).toBe(50);
+      expect(stats.estimated).toBe(true);
+    });
+
+    it('flags the coverage fallback as estimated and keeps the query bounded', async () => {
+      respondWithCollection({
+        repositories: [
+          { id: '1', data: { coordinates: { longitude: 1, latitude: 1 } } },
+          { id: '2', data: {} },
+        ],
+        developers: [{ id: 'd1' }, { id: 'd2' }, { id: 'd3' }],
+      });
+
+      const coverage = await api.getCoverageStats();
+
+      expect(mockDoc).toHaveBeenCalledWith({}, 'stats', 'coverage');
+      expect(coverage.users_total).toBe(3);
+      expect(coverage.repos_total).toBe(2);
+      expect(coverage.repos_with_events).toBe(0);
+      expect(coverage.avg_geocoding_confidence).toBe(0);
+      expect(coverage.estimated).toBe(true);
+    });
+
+    it('falls back to the bounded scan when the aggregate read throws', async () => {
+      mockGetDoc.mockRejectedValue(new Error('permission denied'));
+      respondWithCollection({
+        repositories: [{ id: '1', data: { language: 'Go', domain: 'devops', city: 'Pune', stars: 1 } }],
+        developers: [{ id: 'd1' }],
+      });
+
+      const stats = await api.getEcosystemStats();
+
+      expect(stats.total_repositories).toBe(1);
+      expect(stats.estimated).toBe(true);
+    });
   });
 
-  it('maps UI domain filters to Firestore where-clauses and omits them for All Projects', async () => {
-    await api.getGeospatialActivity('-180,-90,180,90', { domain: 'Web3', limit: 5000 });
-    expect(mockLimit).toHaveBeenCalledWith(5000);
-    expect(mockWhere).toHaveBeenCalledWith('domain', '==', 'blockchain');
+  // ── Bounded reads (S-06) ──────────────────────────────────────────────────
 
-    mockWhere.mockClear();
-    await api.getGeospatialActivity('-180,-90,180,90', { domain: 'All Projects' });
-    expect(mockWhere).not.toHaveBeenCalled();
+  describe('bounded collection reads', () => {
+    it('never issues an unbounded repositories/developers query from any method', async () => {
+      await Promise.all([
+        api.getEcosystemStats(),
+        api.getIndiaOverview(),
+        api.getAnalyticsGraphs('month', 2024),
+        api.getDiscovery(),
+        api.getIndiaEcosystemScores(),
+        api.getSeedStatus(),
+        api.getCoverageStats(),
+        api.getGeospatialActivity('-180,-90,180,90'),
+        api.getGeospatialActivity('-180,-90,180,90', { domain: 'AI', limit: 5000 }),
+      ]);
 
-    await api.getGeospatialActivity('-180,-90,180,90', { domain: 'AI' });
-    expect(mockWhere).toHaveBeenCalledWith('domain', '==', 'ai');
+      const scanned = recordedQueries().filter(
+        (q) => q.name === 'repositories' || q.name === 'developers'
+      );
+      expect(scanned.length).toBeGreaterThan(0);
+      for (const q of scanned) {
+        const limitConstraint = q.constraints.find((c) => c.__constraint === 'limit');
+        expect(limitConstraint).toBeDefined();
+        expect(limitConstraint!.n).toBeGreaterThan(0);
+        expect(limitConstraint!.n).toBeLessThanOrEqual(MAX_CLIENT_READ_LIMIT);
+      }
+    });
+
+    it('clamps geospatial limits to the client read budget', async () => {
+      await api.getGeospatialActivity('-180,-90,180,90', { domain: 'Web3', limit: 5000 });
+      expect(mockLimit).toHaveBeenCalledWith(MAX_CLIENT_READ_LIMIT);
+      expect(mockWhere).toHaveBeenCalledWith('domain', '==', 'blockchain');
+
+      mockWhere.mockClear();
+      await api.getGeospatialActivity('-180,-90,180,90', { domain: 'All Projects' });
+      expect(mockWhere).not.toHaveBeenCalled();
+
+      await api.getGeospatialActivity('-180,-90,180,90', { domain: 'AI' });
+      expect(mockWhere).toHaveBeenCalledWith('domain', '==', 'ai');
+    });
+
+    it('caps the analytics sample and the state score sample', async () => {
+      await api.getAnalyticsGraphs('month', 2024);
+      expect(mockLimit).toHaveBeenCalledWith(500);
+
+      mockLimit.mockClear();
+      await api.getIndiaEcosystemScores();
+      expect(mockLimit).toHaveBeenCalledWith(1000);
+      for (const call of mockLimit.mock.calls) {
+        expect(call[0]).toBeLessThanOrEqual(MAX_CLIENT_READ_LIMIT);
+      }
+    });
   });
+
+  // ── Document-mapped methods ───────────────────────────────────────────────
 
   it('builds GeoJSON features only for repositories that have coordinates', async () => {
     respondWithCollection({
@@ -135,6 +319,47 @@ describe('api Firestore data layer', () => {
     expect(featureCollection.features[0].properties.full_name).toBe('org/atlas');
   });
 
+  it('labels map activity as measured when the sync worker wrote activity_score', async () => {
+    respondWithCollection({
+      repositories: [
+        {
+          id: '1',
+          data: {
+            name: 'atlas',
+            coordinates: { longitude: 77.59, latitude: 12.97 },
+            stars: 100,
+            activity_score: 87.5,
+          },
+        },
+      ],
+    });
+
+    const featureCollection = await api.getGeospatialActivity('-180,-90,180,90');
+    const properties = featureCollection.features[0].properties;
+
+    expect(properties.activity_score).toBe(87.5);
+    expect(properties.activity_source).toBe('github_events');
+    expect(properties.stars_estimate).toBeUndefined();
+  });
+
+  it('labels map activity as a stars estimate when no measured score exists', async () => {
+    respondWithCollection({
+      repositories: [
+        {
+          id: '1',
+          data: { name: 'atlas', coordinates: { longitude: 77.59, latitude: 12.97 }, stars: 100 },
+        },
+      ],
+    });
+
+    const featureCollection = await api.getGeospatialActivity('-180,-90,180,90');
+    const properties = featureCollection.features[0].properties;
+
+    expect(properties.activity_source).toBe('stars_estimate');
+    expect(properties.stars_estimate).toBeGreaterThan(0);
+    expect(properties.activity_score).toBe(properties.stars_estimate);
+  });
+
   it('builds the India overview from the Firestore ecosystem stats', async () => {
     respondWithCollection({
       repositories: [{ id: '1', data: { language: 'Python', domain: 'ai', city: 'Bengaluru', stars: 1 } }],
@@ -148,30 +373,61 @@ describe('api Firestore data layer', () => {
     expect(overview.summary).toContain('1 repositories tracked');
   });
 
-  it('aggregates analytics graphs from the Firestore repositories collection', async () => {
-    respondWithCollection({
-      repositories: [
-        { id: '1', data: { language: 'Python', domain: 'ai', created_at: '2024-01-15T00:00:00Z' } },
-        { id: '2', data: { language: 'Python', domain: 'web', created_at: '2024-02-15T00:00:00Z' } },
-      ],
+  describe('getAnalyticsGraphs', () => {
+    it('samples repositories for the time series and aggregates languages/domains when available', async () => {
+      respondWithDocuments({ 'stats/ecosystem': ECOSYSTEM_AGGREGATE });
+      respondWithCollection({
+        repositories: [
+          { id: '1', data: { language: 'Rust', domain: 'devops', created_at: '2024-01-15T00:00:00Z' } },
+          { id: '2', data: { language: 'Rust', domain: 'devops', created_at: '2024-02-15T00:00:00Z' } },
+        ],
+      });
+
+      const graphs = await api.getAnalyticsGraphs('month', 2024);
+
+      expect(graphs.repositories_over_time).toEqual([
+        { date: '2024-01', value: 1 },
+        { date: '2024-02', value: 1 },
+      ]);
+      // Languages/domains come from the aggregate document, not the sample.
+      expect(graphs.language_popularity).toEqual([
+        { language: 'Python', count: 1500 },
+        { language: 'TypeScript', count: 900 },
+      ]);
+      expect(graphs.top_domains).toEqual([
+        { domain: 'ai', count: 600 },
+        { domain: 'web', count: 500 },
+      ]);
+      expect(graphs.estimated).toBe(false);
+      expect(graphs.sample_size).toBe(2);
     });
 
-    const graphs = await api.getAnalyticsGraphs('month', 2024);
+    it('aggregates analytics graphs from the bounded sample and flags them estimated without an aggregate doc', async () => {
+      respondWithCollection({
+        repositories: [
+          { id: '1', data: { language: 'Python', domain: 'ai', created_at: '2024-01-15T00:00:00Z' } },
+          { id: '2', data: { language: 'Python', domain: 'web', created_at: '2024-02-15T00:00:00Z' } },
+        ],
+      });
 
-    expect(graphs.repositories_over_time).toEqual([
-      { date: '2024-01', value: 1 },
-      { date: '2024-02', value: 1 },
-    ]);
-    expect(graphs.language_popularity).toEqual([{ language: 'Python', count: 2 }]);
-    expect(graphs.top_domains).toEqual([
-      { domain: 'ai', count: 1 },
-      { domain: 'web', count: 1 },
-    ]);
+      const graphs = await api.getAnalyticsGraphs('month', 2024);
+
+      expect(graphs.repositories_over_time).toEqual([
+        { date: '2024-01', value: 1 },
+        { date: '2024-02', value: 1 },
+      ]);
+      expect(graphs.language_popularity).toEqual([{ language: 'Python', count: 2 }]);
+      expect(graphs.top_domains).toEqual([
+        { domain: 'ai', count: 1 },
+        { domain: 'web', count: 1 },
+      ]);
+      expect(graphs.estimated).toBe(true);
+    });
   });
 
   it('returns repository details for an existing Firestore document', async () => {
-    mockGetDoc.mockResolvedValue(
-      documentOf('repo-1', {
+    respondWithDocuments({
+      'repositories/repo-1': {
         name: 'atlas',
         full_name: 'org/atlas',
         description: 'A repo',
@@ -187,8 +443,8 @@ describe('api Firestore data layer', () => {
         pushed_at: '2024-03-01T00:00:00Z',
         classification: { domain: 'ai' },
         owner_login: 'org',
-      })
-    );
+      },
+    });
 
     const repo = await api.getRepositoryDetails('repo-1');
 
@@ -208,65 +464,80 @@ describe('api Firestore data layer', () => {
     await expect(api.getRepositoryDetails('missing')).rejects.toThrow('Repository not found');
   });
 
-  it('reports seed status from the Firestore repositories and stats collections', async () => {
-    mockGetDocs.mockImplementation(async (q: any) => {
-      const name = q?.__query?.[0]?.__collection;
-      if (name === 'repositories') return snapshotOf([{ id: '1' }]);
-      if (name === 'stats') return snapshotOf([{ id: 'latest', data: { repos_synced: 42 } }]);
-      return snapshotOf([]);
-    });
+  it('reports seed status from the aggregate document when it exists', async () => {
+    respondWithDocuments({ 'stats/ecosystem': ECOSYSTEM_AGGREGATE });
 
     const status = await api.getSeedStatus();
 
     expect(status.has_data).toBe(true);
     expect(status.ready).toBe(true);
-    expect(status.total_repos).toBe(42);
+    expect(status.total_repos).toBe(4200);
+    expect(mockGetDocs).not.toHaveBeenCalled();
   });
 
-  it('resolves coverage stats from Firestore repositories and developers', async () => {
-    respondWithCollection({
-      repositories: [
-        { id: '1', data: { coordinates: { longitude: 1, latitude: 1 } } },
-        { id: '2', data: {} },
-      ],
-      developers: [{ id: 'd1' }, { id: 'd2' }, { id: 'd3' }],
-    });
+  it('reports seed status from a bounded probe and stats/latest without an aggregate', async () => {
+    respondWithCollection({ repositories: [{ id: '1' }] });
+    respondWithDocuments({ 'stats/latest': { repos_synced: 42, embedded_repos: 7 } });
 
-    const coverage = await api.getCoverageStats();
+    const status = await api.getSeedStatus();
 
-    expect(coverage.users_total).toBe(3);
-    expect(coverage.repos_total).toBe(2);
-    expect(coverage.repos_with_events).toBe(0);
-    expect(coverage.avg_geocoding_confidence).toBe(0);
+    expect(mockDoc).toHaveBeenCalledWith({}, 'stats', 'latest');
+    expect(mockLimit).toHaveBeenCalledWith(1);
+    expect(status.has_data).toBe(true);
+    expect(status.ready).toBe(true);
+    expect(status.total_repos).toBe(42);
+    expect(status.embedded_repos).toBe(7);
   });
 
   it('resolves an empty insights list in Firestore mode', async () => {
     await expect(api.getInsights(5)).resolves.toEqual([]);
   });
 
-  it('rejects features that require server-side processing', async () => {
-    await expect(api.semanticSearch('python')).rejects.toThrow(
-      'Semantic search requires server-side embeddings'
-    );
-    await expect(
-      api.explainTrends({ entity_name: 'India', current_value: 120, previous_value: 100 })
-    ).rejects.toThrow('Trend explanation requires server-side AI');
-    await expect(api.compareStates('Karnataka', 'Maharashtra')).rejects.toThrow(
-      'State comparison requires server-side processing'
-    );
-    await expect(api.getStateDashboard('Karnataka')).rejects.toThrow(
-      'State dashboard not available in Firestore mode'
-    );
-  });
+  // ── Server-side-only features ─────────────────────────────────────────────
 
-  it('rejects auth flows that are not configured in Firestore mode', async () => {
-    await expect(api.login({ email: 'a@b.c', password: 'x' })).rejects.toThrow(
-      'Auth not configured in Firestore mode'
-    );
-    await expect(
-      api.register({ email: 'a@b.c', password: 'x', full_name: 'A' })
-    ).rejects.toThrow('Auth not configured in Firestore mode');
-    await expect(api.getCurrentUser()).resolves.toBeNull();
+  describe('features that need the API backend', () => {
+    it('rejects with a typed APIError(501) that names the missing data mode', async () => {
+      const cases: Array<[Promise<unknown>, string]> = [
+        [api.semanticSearch('python'), 'Semantic search'],
+        [
+          api.explainTrends({ entity_name: 'India', current_value: 120, previous_value: 100 }),
+          'Trend explanation',
+        ],
+        [api.compareStates('Karnataka', 'Maharashtra'), 'State comparison'],
+        [api.getStateDashboard('Karnataka'), 'State dashboard'],
+      ];
+
+      for (const [promise, feature] of cases) {
+        await expect(promise).rejects.toThrow(new RegExp(`^${feature} requires the DevAtlas API`));
+      }
+
+      // The UI's unavailability detection reads status/code, not just text.
+      await expect(api.getStateDashboard('Karnataka')).rejects.toMatchObject({
+        name: 'APIError',
+        status: 501,
+        code: 'API_UNAVAILABLE',
+      });
+    });
+
+    it('reports the copilot stream as unavailable through the error callback', () => {
+      const onError = jest.fn();
+      const close = api.streamAskDevAtlas('top repos in India', jest.fn(), jest.fn(), onError);
+
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(onError.mock.calls[0][0].status).toBe(501);
+      expect(onError.mock.calls[0][0].code).toBe('API_UNAVAILABLE');
+      expect(typeof close).toBe('function');
+    });
+
+    it('rejects auth flows that are not configured in Firestore mode', async () => {
+      await expect(api.login({ email: 'a@b.c', password: 'x' })).rejects.toThrow(
+        /^Auth requires the DevAtlas API/
+      );
+      await expect(
+        api.register({ email: 'a@b.c', password: 'x', full_name: 'A' })
+      ).rejects.toThrow(/^Auth requires the DevAtlas API/);
+      await expect(api.getCurrentUser()).resolves.toBeNull();
+    });
   });
 
   it('resolves static activity layers without hitting Firestore', async () => {

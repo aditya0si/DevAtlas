@@ -7,7 +7,7 @@ domain statistics, growth metrics, and administrative triggers.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from arq import ArqRedis
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db
+from app.api.deps import get_db, require_admin_key
 from app.core.cache import get_cache_service
 from app.core.config import get_settings
 from app.models.github import (
@@ -728,7 +728,7 @@ async def get_coverage_statistics(
 # Administrative Endpoints
 # ─────────────────────────────────────────────────────────────
 
-@router.post("/admin/trigger/push-event-ingestion")
+@router.post("/admin/trigger/push-event-ingestion", dependencies=[Depends(require_admin_key)])
 async def trigger_push_event_ingestion() -> dict[str, str]:
     """Manually trigger PushEvent ingestion."""
     redis = await get_arq_redis()
@@ -738,7 +738,7 @@ async def trigger_push_event_ingestion() -> dict[str, str]:
     return {"message": "Push event ingestion enqueued", "job_id": str(job.job_id)}
 
 
-@router.post("/admin/trigger/event-enrichment")
+@router.post("/admin/trigger/event-enrichment", dependencies=[Depends(require_admin_key)])
 async def trigger_event_enrichment() -> dict[str, str]:
     """Manually trigger event enrichment."""
     redis = await get_arq_redis()
@@ -748,7 +748,7 @@ async def trigger_event_enrichment() -> dict[str, str]:
     return {"message": "Event enrichment enqueued", "job_id": str(job.job_id)}
 
 
-@router.post("/admin/trigger/activity-score")
+@router.post("/admin/trigger/activity-score", dependencies=[Depends(require_admin_key)])
 async def trigger_activity_score() -> dict[str, str]:
     """Manually trigger activity score computation."""
     redis = await get_arq_redis()
@@ -758,7 +758,7 @@ async def trigger_activity_score() -> dict[str, str]:
     return {"message": "Activity score computation enqueued", "job_id": str(job.job_id)}
 
 
-@router.post("/admin/trigger/ecosystem-score")
+@router.post("/admin/trigger/ecosystem-score", dependencies=[Depends(require_admin_key)])
 async def trigger_ecosystem_score() -> dict[str, str]:
     """Manually trigger ecosystem score computation."""
     redis = await get_arq_redis()
@@ -768,7 +768,7 @@ async def trigger_ecosystem_score() -> dict[str, str]:
     return {"message": "Ecosystem score computation enqueued", "job_id": str(job.job_id)}
 
 
-@router.post("/admin/trigger/aggregation")
+@router.post("/admin/trigger/aggregation", dependencies=[Depends(require_admin_key)])
 async def trigger_aggregation() -> dict[str, str]:
     """Manually trigger aggregation."""
     redis = await get_arq_redis()
@@ -778,7 +778,7 @@ async def trigger_aggregation() -> dict[str, str]:
     return {"message": "Aggregation enqueued", "job_id": str(job.job_id)}
 
 
-@router.post("/admin/trigger/retry-enrichment")
+@router.post("/admin/trigger/retry-enrichment", dependencies=[Depends(require_admin_key)])
 async def trigger_retry_enrichment() -> dict[str, str]:
     """Retry failed event enrichments."""
     redis = await get_arq_redis()
@@ -788,8 +788,8 @@ async def trigger_retry_enrichment() -> dict[str, str]:
     return {"message": "Retry enrichment enqueued", "job_id": str(job.job_id)}
 
 
-@router.post("/admin/trigger/full-pipeline")
-async def trigger_full_pipeline() -> dict[str, str]:
+@router.post("/admin/trigger/full-pipeline", dependencies=[Depends(require_admin_key)])
+async def trigger_full_pipeline() -> dict[str, Any]:
     """Trigger the full Activity Intelligence pipeline."""
     redis = await get_arq_redis()
     jobs = {}

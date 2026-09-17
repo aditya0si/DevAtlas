@@ -2,11 +2,17 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, Clock, TrendingUp, X, ArrowRight, Star, Code2 } from 'lucide-react';
+import { Search, Sparkles, X, ArrowRight, Star, Code2 } from 'lucide-react';
 import { api, SemanticSearchResult } from '@/lib/api';
+import { cn } from '@/lib/utils';
+import { ApiUnavailableNotice, canCallApiMethod, isApiUnavailableError, useApiUnavailable } from './ui/ApiUnavailable';
 
-const recentSearches = ['Bangalore tech ecosystem', 'Python developers in India', 'React vs Vue adoption'];
-const trendingSearches = ['AI/ML skills', 'Remote work trends', 'Startup ecosystem'];
+/**
+ * Illustrative example queries. These are suggestions for what the copilot can
+ * be asked — they are NOT live trending searches, so they are labelled as
+ * examples rather than presented as measured search volume.
+ */
+const exampleSearches = ['Bangalore tech ecosystem', 'Python developers in India', 'React vs Vue adoption'];
 
 const SemanticSearch = () => {
   const [query, setQuery] = useState('');
@@ -15,12 +21,17 @@ const SemanticSearch = () => {
   const [isSearching, setIsSearching] = useState(false);
   const controllerRef = useRef<AbortController | null>(null);
 
+  // Semantic search is an embedding/server feature: in the Firestore-only build
+  // it can never answer, so the input states that up front instead of spinning.
+  const { unavailable, markUnavailable } = useApiUnavailable(canCallApiMethod(api.semanticSearch));
+
   // Abort any in-flight search when the component unmounts.
   useEffect(() => {
     return () => controllerRef.current?.abort();
   }, []);
 
   const handleSearch = async (searchQuery: string) => {
+    if (unavailable) return;
     if (!searchQuery.trim()) {
       setResults([]);
       return;
@@ -37,6 +48,11 @@ const SemanticSearch = () => {
       setResults(data.results || []);
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') return;
+      if (isApiUnavailableError(error)) {
+        setResults([]);
+        markUnavailable();
+        return;
+      }
       console.error('Search error', error);
       setResults([]);
     } finally {
@@ -62,10 +78,17 @@ const SemanticSearch = () => {
             onFocus={() => setIsFocused(true)}
             onBlur={() => setTimeout(() => setIsFocused(false), 200)}
             onKeyDown={handleKeyDown}
-            placeholder="Search for states, skills, topics..."
-            className="w-full pl-12 pr-12 py-4 bg-slate-800/50 border border-slate-700 rounded-2xl text-white placeholder-slate-400 focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 transition-all"
+            disabled={unavailable}
+            aria-disabled={unavailable ? true : undefined}
+            placeholder={
+              unavailable ? 'Search needs the DevAtlas API' : 'Search for states, skills, topics...'
+            }
+            className={cn(
+              'w-full pl-12 pr-12 py-4 bg-slate-800/50 border border-slate-700 rounded-2xl text-white placeholder-slate-400 focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 transition-all',
+              unavailable && 'opacity-60 cursor-not-allowed'
+            )}
           />
-          {query && (
+          {query && !unavailable && (
             <button
               onClick={() => { setQuery(''); setResults([]); }}
               className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white transition-colors"
@@ -75,40 +98,29 @@ const SemanticSearch = () => {
           )}
         </div>
 
+        {unavailable && (
+          <ApiUnavailableNotice
+            subject="Semantic search"
+            detail="Searching needs server-side embeddings, which this build does not include."
+            className="mt-2"
+          />
+        )}
+
         <AnimatePresence>
-          {isFocused && !query && (
+          {isFocused && !query && !unavailable && (
             <motion.div
               initial={{ opacity: 0, y: -10 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -10 }}
               className="absolute top-full left-0 right-0 mt-2 p-4 rounded-2xl bg-slate-800 border border-slate-700 shadow-xl z-50"
             >
-              {recentSearches.length > 0 && (
-                <div className="mb-4">
-                  <div className="flex items-center gap-2 text-xs text-slate-400 mb-2">
-                    <Clock className="w-3 h-3" />
-                    Recent Searches
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {recentSearches.map((search) => (
-                      <button
-                        key={search}
-                        onClick={() => { setQuery(search); handleSearch(search); }}
-                        className="px-3 py-1.5 rounded-lg bg-slate-700/50 text-slate-300 text-sm hover:bg-slate-700 transition-colors"
-                      >
-                        {search}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
               <div>
                 <div className="flex items-center gap-2 text-xs text-slate-400 mb-2">
-                  <TrendingUp className="w-3 h-3" />
-                  Trending Searches
+                  <Sparkles className="w-3 h-3" />
+                  Example searches (illustrative — not live trending terms)
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  {trendingSearches.map((search) => (
+                  {exampleSearches.map((search) => (
                     <button
                       key={search}
                       onClick={() => { setQuery(search); handleSearch(search); }}
@@ -183,7 +195,7 @@ const SemanticSearch = () => {
           )}
         </AnimatePresence>
 
-        {isSearching && (
+        {isSearching && !unavailable && (
           <div className="absolute top-full left-0 right-0 mt-2 p-4 rounded-2xl bg-slate-800 border border-slate-700 shadow-xl z-50">
             <div className="flex items-center gap-3 text-slate-400">
               <div className="w-5 h-5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />

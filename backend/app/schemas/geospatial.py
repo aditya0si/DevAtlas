@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel  # noqa: E402  # noqa: E402  # noqa: E402
+from pydantic import BaseModel
 
 
 class GeoJSONFeature(BaseModel):

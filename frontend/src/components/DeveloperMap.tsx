@@ -21,11 +21,48 @@ type GeoJSONFeature = {
   properties: {
     id: string;
     name: string;
+    full_name?: string;
     language: string | null;
-    activity_score: number;
+    stars?: number;
+    activity_score?: number;
+    /**
+     * Provenance of the marker weight. `github_events` = measured pushes,
+     * `stars_estimate` = derived from star counts. Optional: older documents
+     * (and the hook) may not publish it yet, so it is read defensively.
+     */
+    activity_source?: string | null;
+    push_count_30d?: number | null;
     classification: Record<string, any> | null;
+    domain?: string | null;
+    description?: string | null;
   };
 };
+
+/** Where the per-repository metric shown on the map actually comes from. */
+type ActivitySource = "github_events" | "stars_estimate";
+
+function resolveActivitySource(properties: GeoJSONFeature["properties"]): ActivitySource {
+  // An explicit provenance field wins when present.
+  if (properties.activity_source === "github_events") return "github_events";
+  if (properties.activity_source === "stars_estimate") return "stars_estimate";
+  // Otherwise, a published push count means the number is measured activity.
+  if (typeof properties.push_count_30d === "number" && Number.isFinite(properties.push_count_30d)) {
+    return "github_events";
+  }
+  // Nothing published: the weight is the stars-derived estimate. Never claim
+  // it is measured activity.
+  return "stars_estimate";
+}
+
+function activityMetricLabel(source: ActivitySource): string {
+  return source === "github_events" ? "pushes / 30d" : "stars estimate";
+}
+
+function formatCount(value: number | null | undefined): string {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value.toLocaleString("en-US")
+    : "—";
+}
 
 export interface StoryStep {
   center: [number, number];
@@ -62,13 +99,28 @@ const DeveloperMap = ({
 }: DeveloperMapProps) => {
   // Real-time subscription to Firestore. As Cloud Functions sync GitHub repos
   // every 5 min, onSnapshot pushes updates to the map instantly — no refetch.
-  const { features: liveFeatures, loading } = useRealtimeRepos({
+  const { features: liveFeatures, loading, error } = useRealtimeRepos({
     domain: activeFilter,
     limitCount: 5000,
   });
   const features = liveFeatures as unknown as GeoJSONFeature[];
 
   const [map, setMap] = useState<MapLibreMap | null>(null);
+  const [mapInitError, setMapInitError] = useState<string | null>(null);
+  const [sourceUnresponsive, setSourceUnresponsive] = useState(false);
+  const [hovered, setHovered] = useState<{
+    x: number;
+    y: number;
+    properties: GeoJSONFeature["properties"];
+  } | null>(null);
+
+  // Latest onMapLoad callback, so the init effect can report "the shell is up"
+  // even when the WebGL map itself cannot start — without re-creating the map
+  // on every parent render (the callback identity changes each render).
+  const onMapLoadRef = useRef(onMapLoad);
+  useEffect(() => {
+    onMapLoadRef.current = onMapLoad;
+  }, [onMapLoad]);
 
   // Story Mode playback state, kept in a ref so the imperative controls
   // (pause/resume/skip/stop) can mutate it without triggering re-renders.
@@ -107,15 +159,24 @@ const DeveloperMap = ({
   };
 
   useEffect(() => {
-    const instance = new MapLibreMap({
-      container: "devatlas-map",
-      style: "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
-      center: [0, 0], // Start from space (0,0)
-      zoom: 0,
-      pitch: 0,
-      bearing: 0,
-      attributionControl: false,
-    });
+    let instance: MapLibreMap;
+    try {
+      instance = new MapLibreMap({
+        container: "devatlas-map",
+        style: "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
+        center: [0, 0], // Start from space (0,0)
+        zoom: 0,
+        pitch: 0,
+        bearing: 0,
+        attributionControl: false,
+      });
+    } catch (initError) {
+      // No WebGL / renderer: keep the map shell mounted and say what happened
+      // instead of letting the error take the whole page down.
+      setMapInitError(initError instanceof Error ? initError.message : "renderer failed to start");
+      onMapLoadRef.current?.();
+      return;
+    }
     setMap(instance);
 
     // Expose the map instance for E2E testing (repo-detail drill-down clicks).
@@ -251,6 +312,31 @@ const DeveloperMap = ({
     };
   }, [map, onRepositoryClick]);
 
+  // Per-repository tooltip. The activity line is labelled by its true source so
+  // a stars-derived estimate is never presented as measured activity.
+  useEffect(() => {
+    if (!map) return;
+
+    const handleMove = (e: MapLayerMouseEvent) => {
+      const feature = e.features?.[0];
+      if (!feature) return;
+      setHovered({
+        x: e.point?.x ?? 0,
+        y: e.point?.y ?? 0,
+        properties: feature.properties as GeoJSONFeature["properties"],
+      });
+    };
+    const handleOut = () => setHovered(null);
+
+    map.on("mousemove", "repositories-circle", handleMove);
+    map.on("mouseleave", "repositories-circle", handleOut);
+
+    return () => {
+      map.off("mousemove", "repositories-circle", handleMove);
+      map.off("mouseleave", "repositories-circle", handleOut);
+    };
+  }, [map]);
+
   const displayFeatures = useMemo(() => {
     return features.map((feature) => {
       // Use the real classified domain for category + color. Uncategorized
@@ -271,6 +357,26 @@ const DeveloperMap = ({
       };
     });
   }, [features]);
+
+  // If the data source stays silent with nothing plotted, say so rather than
+  // spinning forever.
+  useEffect(() => {
+    if (!loading || features.length > 0) return;
+    const timeout = setTimeout(() => setSourceUnresponsive(true), 5000);
+    return () => clearTimeout(timeout);
+  }, [loading, features.length]);
+
+  // Which metric the markers are weighted by — aggregated across the plotted
+  // repositories, never assumed.
+  const activitySource = useMemo<ActivitySource | "mixed" | null>(() => {
+    if (displayFeatures.length === 0) return null;
+    const measured = displayFeatures.filter(
+      (feature) => resolveActivitySource(feature.properties) === "github_events"
+    ).length;
+    if (measured === displayFeatures.length) return "github_events";
+    if (measured === 0) return "stars_estimate";
+    return "mixed";
+  }, [displayFeatures]);
 
   useEffect(() => {
     if (!map || loading) return;
@@ -362,9 +468,112 @@ const DeveloperMap = ({
     }
   }, [map, displayFeatures, loading, onMapLoad]);
 
+  const showNoData =
+    !mapInitError &&
+    displayFeatures.length === 0 &&
+    (!loading || sourceUnresponsive || Boolean(error));
+  const hoveredSource: ActivitySource | null = hovered
+    ? resolveActivitySource(hovered.properties)
+    : null;
+
   return (
-    <div className="w-full h-full bg-[#050816]">
+    <div className="relative w-full h-full bg-[#050816]">
       <div id="devatlas-map" className="w-full h-full" />
+
+      {/* Per-repository tooltip: the activity metric is labelled by its source. */}
+      {hovered && !mapInitError && (
+        <div
+          data-testid="map-repo-tooltip"
+          data-activity-source={hoveredSource}
+          className="pointer-events-none absolute z-20 max-w-[240px] rounded-xl border border-slate-700 bg-slate-900/95 px-3 py-2 shadow-xl backdrop-blur"
+          style={{ left: hovered.x + 14, top: hovered.y + 14 }}
+        >
+          <p className="text-xs font-semibold text-white truncate">
+            {hovered.properties.name || hovered.properties.full_name || "Repository"}
+          </p>
+          {hovered.properties.full_name && (
+            <p className="text-[10px] text-slate-400 truncate">{hovered.properties.full_name}</p>
+          )}
+          <p className="mt-1 text-[10px] text-slate-300">
+            {hovered.properties.language || "Unknown language"} · {formatCount(hovered.properties.stars)} stars
+          </p>
+          <p className="mt-1 text-[10px]" data-testid="map-tooltip-activity">
+            <span className="font-semibold text-indigo-300">
+              {hoveredSource ? activityMetricLabel(hoveredSource) : "stars estimate"}
+            </span>
+            <span className="text-slate-400">
+              {hoveredSource === "github_events"
+                ? typeof hovered.properties.push_count_30d === "number"
+                  ? ` — ${formatCount(hovered.properties.push_count_30d)} push events, measured from GitHub`
+                  : " — measured from GitHub push events (last 30 days)"
+                : " — derived from stars, not measured push activity"}
+            </span>
+          </p>
+        </div>
+      )}
+
+      {/* Metric provenance legend: what the marker weight means on this map. */}
+      {activitySource && !mapInitError && (
+        <div
+          data-testid="map-activity-source"
+          data-activity-source={activitySource}
+          className="pointer-events-none absolute bottom-4 right-4 z-10 max-w-[280px] rounded-xl border border-slate-700 bg-slate-900/80 px-3 py-2 backdrop-blur"
+        >
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+            Marker weight
+          </p>
+          <p className="text-xs font-medium text-slate-200">
+            {activitySource === "github_events" && "pushes / 30d"}
+            {activitySource === "stars_estimate" && "stars estimate"}
+            {activitySource === "mixed" && "pushes / 30d where published, stars estimate otherwise"}
+          </p>
+          <p className="mt-0.5 text-[10px] text-slate-500">
+            {activitySource === "github_events" &&
+              "Measured from GitHub push events in the last 30 days."}
+            {activitySource === "stars_estimate" &&
+              "Derived from star counts — not measured push activity."}
+            {activitySource === "mixed" &&
+              "Some repositories have no push data yet; their weight is estimated."}
+          </p>
+        </div>
+      )}
+
+      {/* Explicit empty state — the map shell never pretends it has data. */}
+      {showNoData && (
+        <div
+          data-testid="no-data-state"
+          role="status"
+          className="pointer-events-none absolute left-1/2 top-24 z-10 w-full max-w-sm -translate-x-1/2 rounded-2xl border border-amber-500/30 bg-slate-900/85 px-4 py-3 text-center backdrop-blur"
+        >
+          <p className="text-sm font-semibold text-amber-200">No data yet</p>
+          <p className="mt-1 text-xs text-slate-400">
+            No repository locations are available in this build&apos;s data source. The map
+            fills in automatically as soon as the sync publishes repositories.
+          </p>
+          {error ? (
+            <p className="mt-1 text-[10px] text-slate-500">Data source: {error}</p>
+          ) : sourceUnresponsive ? (
+            <p className="mt-1 text-[10px] text-slate-500">
+              Still waiting for the data source to respond.
+            </p>
+          ) : null}
+        </div>
+      )}
+
+      {/* The WebGL renderer could not start — say so, keep the shell usable. */}
+      {mapInitError && (
+        <div
+          data-testid="map-init-error"
+          role="status"
+          className="pointer-events-none absolute left-1/2 top-24 z-10 w-full max-w-sm -translate-x-1/2 rounded-2xl border border-amber-500/30 bg-slate-900/85 px-4 py-3 text-center backdrop-blur"
+        >
+          <p className="text-sm font-semibold text-amber-200">Map renderer unavailable</p>
+          <p className="mt-1 text-xs text-slate-400">
+            The WebGL map could not start in this browser ({mapInitError}). Statistics panels
+            remain available.
+          </p>
+        </div>
+      )}
     </div>
   );
 };

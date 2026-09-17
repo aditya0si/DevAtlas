@@ -24,6 +24,19 @@ jest.mock('@/context/AuthContext', () => ({
   }),
 }));
 
+// The page must never boot the real data client here: importing it initialises
+// the Firebase SDK inside jsdom ("heartbeats undefined") and can leave timers
+// behind that make Jest force-exit a worker. A minimal deterministic fake keeps
+// this suite isolated and fast.
+const mockGetSeedStatus = jest.fn();
+const mockGetEcosystemStats = jest.fn();
+jest.mock('@/lib/api', () => ({
+  api: {
+    getSeedStatus: (...args: unknown[]) => mockGetSeedStatus(...args),
+    getEcosystemStats: (...args: unknown[]) => mockGetEcosystemStats(...args),
+  },
+}));
+
 const stats = {
   total_repositories: 100,
   total_events: 500,
@@ -40,26 +53,20 @@ const stats = {
   growth_metrics: { weekly_growth: 1, monthly_growth: 2, quarterly_growth: 3, repos_this_week: 1, repos_this_month: 2 },
 };
 
-const jsonResponse = (body: unknown) => ({
-  ok: true,
-  status: 200,
-  json: async () => body,
-  text: async () => JSON.stringify(body),
-});
+// Rendering the full page mounts several async panels; the default 5s per-test
+// budget is too tight on a loaded machine (and the page's intro timers can make
+// assertions race). Give headroom without weakening any assertion.
+jest.setTimeout(30000);
 
 describe('Story Mode controls', () => {
   beforeEach(() => {
-    const fetchMock = jest.fn((url: string | URL | Request) => {
-      const href = String(url);
-      if (href.includes('/india/seed-status')) {
-        return Promise.resolve(jsonResponse({ has_data: true, total_repos: 100, embedded_repos: 60, ready: true }));
-      }
-      if (href.includes('/india/stats')) {
-        return Promise.resolve(jsonResponse(stats));
-      }
-      return Promise.resolve(jsonResponse({}));
+    mockGetSeedStatus.mockReset().mockResolvedValue({
+      has_data: true,
+      total_repos: 100,
+      embedded_repos: 60,
+      ready: true,
     });
-    global.fetch = fetchMock as unknown as typeof fetch;
+    mockGetEcosystemStats.mockReset().mockResolvedValue(stats);
   });
 
   it('opens the story overlay with accessible pause, skip and close controls', async () => {
@@ -103,5 +110,57 @@ describe('Story Mode controls', () => {
     await waitFor(() => {
       expect(screen.queryByText('Story Mode Playing')).not.toBeInTheDocument();
     });
+  });
+
+  it('marks the story tour as illustrative so its titles are not read as data', async () => {
+    render(<ImmersiveHome />);
+    fireEvent.click(screen.getByRole('button', { name: 'Story Mode' }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText('Illustrative tour — editorial titles, not measured rankings')
+      ).toBeInTheDocument();
+    });
+  });
+});
+
+describe('ImmersiveHome with no data', () => {
+  beforeEach(() => {
+    mockGetSeedStatus.mockReset().mockResolvedValue({
+      has_data: false,
+      total_repos: 0,
+      embedded_repos: 0,
+      ready: false,
+    });
+    mockGetEcosystemStats.mockReset().mockResolvedValue({
+      ...stats,
+      total_repositories: 0,
+      total_developers: 0,
+      total_stars: 0,
+      total_events: 0,
+      ai_repo_percentage: 0,
+      top_states: [],
+      top_languages: [],
+      top_domains: [],
+      growth_metrics: {},
+    });
+  });
+
+  it('renders the hero and map shell plus an explicit "no data yet" state instead of crashing', async () => {
+    render(<ImmersiveHome />);
+
+    // Hero + map shell are present immediately — no blocking interstitial.
+    expect(screen.getByRole('heading', { name: 'DevAtlas' })).toBeInTheDocument();
+    expect(screen.getByTestId('mock-map')).toBeInTheDocument();
+
+    // The explicit no-data state replaces the old fake-progress overlay.
+    const notice = await screen.findByTestId('no-data-notice');
+    expect(notice).toHaveTextContent('No data yet');
+    expect(screen.queryByText('Preparing Your Experience')).not.toBeInTheDocument();
+
+    // The ticker states that it is waiting for data rather than inventing any.
+    expect(screen.getByTestId('live-ticker')).toHaveTextContent(
+      'Live ecosystem data will appear once repositories are loaded'
+    );
   });
 });
