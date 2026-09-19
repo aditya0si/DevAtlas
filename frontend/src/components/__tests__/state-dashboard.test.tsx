@@ -13,6 +13,16 @@ jest.mock('@/lib/api', () => ({
   },
 }));
 
+const ORIGINAL_DATA_MODE = process.env.NEXT_PUBLIC_DATA_MODE;
+
+const useApiMode = () => {
+  process.env.NEXT_PUBLIC_DATA_MODE = 'api';
+};
+
+const useFirestoreMode = () => {
+  delete process.env.NEXT_PUBLIC_DATA_MODE;
+};
+
 const stats = {
   total_repositories: 85000,
   total_events: 1200000,
@@ -46,8 +56,17 @@ const dashboard = {
   activity_graph: [],
 };
 
+afterEach(() => {
+  if (ORIGINAL_DATA_MODE === undefined) {
+    delete process.env.NEXT_PUBLIC_DATA_MODE;
+  } else {
+    process.env.NEXT_PUBLIC_DATA_MODE = ORIGINAL_DATA_MODE;
+  }
+});
+
 describe('StateDashboard request lifecycle', () => {
   beforeEach(() => {
+    useApiMode();
     mockGetEcosystemStats.mockReset();
     mockGetStateDashboard.mockReset();
     mockGetEcosystemStats.mockResolvedValue(stats);
@@ -88,5 +107,50 @@ describe('StateDashboard request lifecycle', () => {
 
     unmount();
     expect(dashboardSignal.aborted).toBe(true);
+  });
+});
+
+describe('StateDashboard in the Firestore-only build', () => {
+  beforeEach(() => {
+    useFirestoreMode();
+    mockGetEcosystemStats.mockReset().mockResolvedValue(stats);
+    mockGetStateDashboard.mockReset();
+  });
+
+  it('never calls the dashboard endpoint and shows an explicit "needs the DevAtlas API" notice', async () => {
+    render(<StateDashboard year={2024} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Karnataka')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText('Karnataka'));
+
+    const notice = await screen.findByTestId('api-unavailable-notice');
+    expect(notice).toHaveTextContent(
+      'The state dashboard needs the DevAtlas API — this build serves Firestore data only.'
+    );
+    expect(mockGetStateDashboard).not.toHaveBeenCalled();
+    // The real state list (Firestore-backed) stays usable; no generic error banner.
+    expect(screen.getAllByText('Karnataka').length).toBeGreaterThan(0);
+    expect(screen.queryByText('Unable to load state data')).not.toBeInTheDocument();
+  });
+
+  it('escalates a rejected dashboard request to the explicit unavailable state', async () => {
+    useApiMode();
+    mockGetStateDashboard.mockRejectedValue(new Error('State dashboard not available in Firestore mode'));
+
+    render(<StateDashboard year={2024} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Karnataka')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText('Karnataka'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('api-unavailable-notice')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('Unable to load state data')).not.toBeInTheDocument();
   });
 });

@@ -11,6 +11,16 @@ logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
+
+class AIUnavailableError(RuntimeError):
+    """No AI provider could produce a genuine model response.
+
+    Raised instead of substituting invented "analysis". Callers must handle it
+    explicitly: degrade to a clearly-labelled deterministic view or surface the
+    error — never present placeholder text as if a model wrote it.
+    """
+
+
 class RepositoryClassification(BaseModel):
     domain: str = Field(description="Broad domain, e.g., Web, Mobile, Data, AI/ML, DevOps")
     industry: str = Field(description="Target industry, e.g., Finance, Healthcare, DevTools, General")
@@ -69,13 +79,10 @@ class GeminiProvider(AIProvider):
 
     async def stream_text(self, system_prompt: str, user_prompt: str) -> AsyncGenerator[str, None]:
         if not self.client:
-            yield "Gemini API key is not configured. Returning analysis baseline.\n"
-            yield f"Query: {user_prompt}\n"
-            yield (
-                "India developer ecosystem shows high growth in AI, Cloud, and Web3 repositories "
-                "across Karnataka and Telangana."
+            raise AIUnavailableError(
+                "Gemini is not available: google-genai is not installed or "
+                "GEMINI_API_KEY is not configured."
             )
-            return
 
         combined_prompt = f"{system_prompt}\n\nUser Query: {user_prompt}"
         response = self.client.models.generate_content_stream(
@@ -152,9 +159,10 @@ class OllamaProvider(AIProvider):
 
     async def stream_text(self, system_prompt: str, user_prompt: str) -> AsyncGenerator[str, None]:
         if not await self._check_available():
-            base = "Ollama is not available. Returning analysis baseline.\n"
-            yield f"{base}Query: {user_prompt}\nIndia developer ecosystem shows high growth across states."
-            return
+            raise AIUnavailableError(
+                "Ollama is not available: no Ollama instance answered at "
+                f"{self.base_url} (model '{self.model}')."
+            )
 
         combined = f"{system_prompt}\n\nUser Query: {user_prompt}"
         async with self.client.stream(
@@ -209,13 +217,10 @@ class OpenAIProvider(AIProvider):
 
     async def stream_text(self, system_prompt: str, user_prompt: str) -> AsyncGenerator[str, None]:
         if not self.client:
-            yield "OpenAI API key is not configured. Returning analysis baseline.\n"
-            yield f"Query: {user_prompt}\n"
-            yield (
-                "India developer ecosystem shows high growth in AI, Cloud, and Web3 repositories "
-                "across Karnataka and Telangana."
+            raise AIUnavailableError(
+                "OpenAI is not available: the openai SDK is not installed or "
+                "OPENAI_API_KEY is not configured."
             )
-            return
 
         response = await self.client.chat.completions.create(
             model="gpt-4o",
@@ -298,14 +303,10 @@ class GroqProvider(AIProvider):
 
     async def stream_text(self, system_prompt: str, user_prompt: str) -> AsyncGenerator[str, None]:
         if not self.client:
-            yield "Groq API key is not configured. Returning analysis baseline.\n"
-            yield f"Query: {user_prompt}\n"
-            baseline = (
-                "India developer ecosystem shows high growth in AI, Cloud, and "
-                "Web3 repositories across Karnataka and Telangana."
+            raise AIUnavailableError(
+                "Groq is not available: the openai SDK is not installed or "
+                "GROQ_API_KEY is not configured."
             )
-            yield baseline
-            return
 
         response = await self.client.chat.completions.create(
             model=settings.groq_model,
@@ -323,33 +324,51 @@ class GroqProvider(AIProvider):
 
 
 class MockAIProvider(AIProvider):
+    """Deterministic stand-in for embeddings and neutral classification.
+
+    It deliberately does NOT impersonate a language model:
+
+    - ``stream_text`` raises ``AIUnavailableError`` instead of emitting
+      invented analysis text;
+    - ``classify_repository`` returns an explicitly neutral, non-committal
+      result whose ``source`` field marks it as a deterministic fallback.
+    """
+
     async def classify_repository(self, prompt: str) -> dict[str, Any]:
+        # No repository data is available to this fallback, so it must not
+        # claim a domain, technology or framework for the repository.
         return {
-            "domain": "AI/ML",
-            "industry": "DevTools",
-            "primary_technology": "Python",
-            "framework": "PyTorch",
-            "difficulty": "Intermediate",
-            "health": "Active",
+            "domain": "opensource",
+            "industry": "general",
+            "primary_technology": "Unknown",
+            "framework": "None",
+            "difficulty": "Unknown",
+            "health": "Unknown",
+            "source": "deterministic-fallback",
         }
 
     async def generate_embedding(self, text: str) -> list[float]:
         return [0.01] * 1536
 
     async def stream_text(self, system_prompt: str, user_prompt: str) -> AsyncGenerator[str, None]:
-        response = (
-            f"Analysis for '{user_prompt}': Karnataka (Bengaluru) leads in AI repository density "
-            "(+32% YoY growth), followed by Telangana (Hyderabad) and Maharashtra (Pune/Mumbai). "
-            "Key tech trends include PyTorch, Next.js, and Rust adoption."
+        raise AIUnavailableError(
+            "MockAIProvider is a deterministic placeholder and does not generate "
+            "analysis text. Configure GROQ_API_KEY, OPENAI_API_KEY or GEMINI_API_KEY, "
+            "or run a local Ollama instance (OLLAMA_BASE_URL)."
         )
-        for word in response.split():
-            yield word + " "
+        # Unreachable, but keeps this method an async generator so callers that
+        # ``async for`` over it receive the error on first iteration.
+        yield ""  # pragma: no cover
+
 
 class FallbackChainProvider(AIProvider):
     """Resilient provider cascading Groq -> OpenAI -> Gemini -> Ollama -> MockAI.
 
     Groq is preferred when ``GROQ_API_KEY`` is configured; OpenAI and Gemini
     remain available for backward compatibility when their env vars exist.
+    MockAI is last: it serves embeddings and non-committal classifications, but
+    refuses to fabricate analysis text, so ``stream_text`` raises
+    ``AIUnavailableError`` when every real provider fails or is unconfigured.
     """
 
     def __init__(self):
@@ -406,6 +425,12 @@ class FallbackChainProvider(AIProvider):
             )
 
     async def stream_text(self, system_prompt: str, user_prompt: str) -> AsyncGenerator[str, None]:
+        """Stream from the first provider that produces genuine model text.
+
+        Raises ``AIUnavailableError`` when every provider fails, is
+        unconfigured, or refuses (MockAIProvider never impersonates a model):
+        the chain must not fall back to invented analysis text.
+        """
         for provider in self.providers:
             try:
                 item_yielded = False
@@ -414,11 +439,18 @@ class FallbackChainProvider(AIProvider):
                     yield chunk
                 if item_yielded:
                     return
-            except Exception:
+            except AIUnavailableError as exc:
+                logger.debug("%s unavailable: %s", type(provider).__name__, exc)
+                continue
+            except Exception as exc:
+                logger.warning("%s streaming failed: %s", type(provider).__name__, exc)
                 continue
 
-        async for chunk in MockAIProvider().stream_text(system_prompt, user_prompt):
-            yield chunk
+        raise AIUnavailableError(
+            "No AI provider is available to generate analysis text. Configure "
+            "GROQ_API_KEY, OPENAI_API_KEY or GEMINI_API_KEY, or run a local Ollama "
+            "instance (OLLAMA_BASE_URL)."
+        )
 
 
 class AIServiceFactory:
@@ -432,8 +464,10 @@ async def generate_text(system_prompt: str, user_prompt: str) -> str:
 
     Convenience wrapper used by services that only need the final text (e.g.
     InsightService and TrendExplanationService) so they never construct an AI
-    client directly — they delegate to AIServiceFactory/FallbackChainProvider,
-    which stays functional in no-key environments (MockAI fallback).
+    client directly — they delegate to AIServiceFactory/FallbackChainProvider.
+    Raises ``AIUnavailableError`` when no provider can produce real text;
+    callers degrade to clearly-labelled deterministic output instead of
+    presenting invented analysis.
     """
     provider = AIServiceFactory.get_provider()
     chunks: list[str] = []

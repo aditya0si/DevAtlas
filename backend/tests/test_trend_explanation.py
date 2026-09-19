@@ -6,6 +6,20 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from app.core.config import get_settings
+
+
+@pytest.fixture(autouse=True)
+def _relax_ai_rate_limits(monkeypatch):
+    """POST /api/v1/india/trends/explain sits behind the LLM cost guard (S-01).
+
+    These tests are about trend explanations, not throttling, and the whole
+    suite shares one test-client IP under CI's real Redis, so they run with a
+    large budget. The limiter itself is covered in tests/test_authz_guards.py.
+    """
+    monkeypatch.setattr(get_settings(), "ai_rate_limit_requests", 100_000)
+    monkeypatch.setattr(get_settings(), "ai_daily_requests", 10_000_000)
+
 
 class TestTrendExplanationService:
     """Tests for TrendExplanationService."""
@@ -90,7 +104,7 @@ class TestTrendExplanationService:
             strengths_b=["Cybersecurity focus", "Healthcare AI"],
             weaknesses_a=["Growth rate"],
             weaknesses_b=["Open source participation"],
-            opportunities=["Cross-state collaboration"],
+            opportunities=["Larger shared developer pool"],
             recommendations=["Focus on developer engagement"],
             confidence_score=0.9,
         )
@@ -230,8 +244,9 @@ class TestTrendExplanationService:
 
     @pytest.mark.asyncio
     async def test_explanation_falls_back_to_structured_for_non_json(self):
-        """If the provider returns prose (e.g. the no-key MockAI fallback), the
-        structured explanation is used instead of erroring."""
+        """If the provider returns unparseable prose, the structured explanation
+        is used and its confidence is derived from the counts (never a canned
+        literal)."""
         from app.services.trend_explanation_service import (
             EntityType,
             TrendDirection,
@@ -242,7 +257,7 @@ class TestTrendExplanationService:
 
         with patch(
             "app.services.ai_service.generate_text",
-            new=AsyncMock(return_value="Analysis: Karnataka leads with strong AI density (+32% YoY)."),
+            new=AsyncMock(return_value="Analysis without any JSON payload."),
         ):
             explanation = await service._generate_explanation(
                 entity_type=EntityType.STATE,
@@ -256,9 +271,79 @@ class TestTrendExplanationService:
                 context={},
             )
 
-        assert explanation.confidence_score == 0.6
+        # Counts-only structured fallback: low, derived confidence.
+        assert explanation.confidence_score == 0.25
         assert "increase" in explanation.summary.lower()
         assert explanation.entity_name == "Karnataka"
+
+    @pytest.mark.asyncio
+    async def test_explanation_falls_back_when_ai_is_unavailable(self):
+        """AIUnavailableError (no provider configured) degrades to the
+        structured explanation instead of inventing an AI narrative."""
+        from app.services.ai_service import AIUnavailableError
+        from app.services.trend_explanation_service import (
+            EntityType,
+            TrendDirection,
+            TrendExplanationService,
+        )
+
+        service = TrendExplanationService.__new__(TrendExplanationService)
+        context = {
+            "repository_categories": [{"domain": "ai", "count": 120}],
+            "language_adoption": [{"language": "Python", "count": 200}],
+            "organization_activity": [],
+            "creation_rate": 42,
+        }
+
+        with patch(
+            "app.services.ai_service.generate_text",
+            new=AsyncMock(side_effect=AIUnavailableError("no provider available")),
+        ):
+            explanation = await service._generate_explanation(
+                entity_type=EntityType.STATE,
+                entity_name="Karnataka",
+                metric_name="repository_count",
+                current_value=500,
+                previous_value=400,
+                pct_change=25.0,
+                direction=TrendDirection.UP,
+                time_range="month",
+                context=context,
+            )
+
+        # Counts + supporting breakdown rows -> slightly above counts-only, but
+        # still far below the AI-narrative baseline.
+        assert explanation.confidence_score == 0.3
+        assert explanation.key_drivers[0].factor == "ai"
+
+    @pytest.mark.asyncio
+    async def test_ai_narrative_without_self_reported_confidence_gets_baseline(self):
+        """A provider that wrote the narrative but omitted confidence_score gets
+        the AI-narrative baseline (0.5), not a hardcoded 'confident' value."""
+        from app.services.trend_explanation_service import (
+            EntityType,
+            TrendDirection,
+            TrendExplanationService,
+        )
+
+        service = TrendExplanationService.__new__(TrendExplanationService)
+        payload = json.dumps({"summary": "Provider narrative without a confidence field."})
+
+        with patch("app.services.ai_service.generate_text", new=AsyncMock(return_value=payload)):
+            explanation = await service._generate_explanation(
+                entity_type=EntityType.STATE,
+                entity_name="Karnataka",
+                metric_name="repository_count",
+                current_value=500,
+                previous_value=400,
+                pct_change=25.0,
+                direction=TrendDirection.UP,
+                time_range="month",
+                context={},
+            )
+
+        assert explanation.summary == "Provider narrative without a confidence field."
+        assert explanation.confidence_score == 0.5
 
     @pytest.mark.asyncio
     async def test_comparison_summary_routes_through_provider(self):
@@ -657,3 +742,130 @@ class TestCompareStatesComponent:
 
         assert state_a == "Mumbai"
         assert state_b == "Bengaluru"
+
+
+class TestDeterministicFallbackHonesty:
+    """S-04: the no-AI fallbacks compute confidence from the data used and
+    claim only what the data supports (no canned strings, no magic literals)."""
+
+    @staticmethod
+    def _comparison(**overrides):
+        from app.services.trend_explanation_service import StateComparisonData
+
+        data = dict(
+            state_a="Karnataka",
+            state_b="Maharashtra",
+            repository_count_a=500,
+            repository_count_b=350,
+            developer_activity_a=200,
+            developer_activity_b=150,
+            growth_rate_a=15.5,
+            growth_rate_b=12.3,
+            top_languages_a=[{"language": "Python", "count": 150}],
+            top_languages_b=[{"language": "Python", "count": 100}],
+            top_domains_a=[{"domain": "ai", "count": 100}],
+            top_domains_b=[{"domain": "ai", "count": 75}],
+            ai_repos_a=100,
+            ai_repos_b=75,
+            cybersecurity_repos_a=25,
+            cybersecurity_repos_b=40,
+            healthcare_repos_a=30,
+            healthcare_repos_b=20,
+            robotics_repos_a=15,
+            robotics_repos_b=10,
+            opensource_repos_a=200,
+            opensource_repos_b=150,
+            avg_stars_a=45.5,
+            avg_stars_b=38.2,
+            innovation_score_a=78.5,
+            innovation_score_b=65.3,
+            growth_score_a=82.1,
+            growth_score_b=70.4,
+            top_organizations_a=["org1"],
+            top_organizations_b=["org3"],
+        )
+        data.update(overrides)
+        return StateComparisonData(**data)
+
+    def test_structured_confidence_is_derived_from_the_data_used(self):
+        from app.services.trend_explanation_service import TrendExplanationService
+
+        estimate = TrendExplanationService._estimate_structured_confidence
+        # Counts available, no breakdown rows -> the "counts only" level.
+        assert estimate({}, 500, 400) == 0.25
+        # Thin sample -> lower.
+        assert estimate({}, 5, 4) == 0.15
+        # Nothing to explain -> lower still.
+        assert estimate({}, 0, 0) == 0.1
+        # Breakdown rows backing the key drivers add a small amount.
+        context = {"repository_categories": [{"domain": "ai", "count": 120}]}
+        assert estimate(context, 500, 400) == 0.3
+
+    def test_structured_comparison_confidence_is_derived_from_the_data_used(self):
+        from app.services.trend_explanation_service import TrendExplanationService
+
+        estimate = TrendExplanationService._estimate_comparison_confidence
+        assert estimate(self._comparison()) == 0.25
+        assert estimate(self._comparison(repository_count_b=5)) == 0.15
+        assert estimate(self._comparison(repository_count_a=0, repository_count_b=0)) == 0.1
+
+    def test_structured_summary_drops_fabricated_claims(self):
+        """The deterministic comparison fallback reports only measured gaps,
+        never canned weaknesses/opportunities (or mojibake placeholders)."""
+        from app.services.trend_explanation_service import TrendExplanationService
+
+        service = TrendExplanationService.__new__(TrendExplanationService)
+        summary = service._generate_structured_summary(self._comparison())
+
+        assert summary.confidence_score == 0.25
+        assert summary.opportunities == []
+        assert summary.recommendations == []
+        assert all(
+            "below potential" not in w.lower()
+            for w in summary.weaknesses_a + summary.weaknesses_b
+        )
+        # Only the measured repository gap is reported, for the trailing state.
+        assert summary.weaknesses_a == []
+        assert "Fewer repositories than Karnataka" in summary.weaknesses_b[0]
+        assert "350 vs 500" in summary.weaknesses_b[0]
+        # No CJK characters (the old mojibake literal is gone).
+        rendered = " ".join(
+            summary.opportunities + summary.recommendations + summary.weaknesses_a + summary.weaknesses_b
+        )
+        assert not any("\u3000" <= ch <= "\u9fff" for ch in rendered)
+
+    def test_structured_summary_confidence_on_empty_data(self):
+        from app.services.trend_explanation_service import TrendExplanationService
+
+        service = TrendExplanationService.__new__(TrendExplanationService)
+        summary = service._generate_structured_summary(
+            self._comparison(
+                repository_count_a=0,
+                repository_count_b=0,
+                developer_activity_a=0,
+                developer_activity_b=0,
+                avg_stars_a=0.0,
+                avg_stars_b=0.0,
+            )
+        )
+
+        assert summary.confidence_score == 0.1
+
+    @pytest.mark.asyncio
+    async def test_comparison_ai_narrative_without_confidence_gets_baseline(self):
+        """Provider JSON lacking confidence_score gets the AI-narrative
+        baseline (0.5) instead of failing into the deterministic fallback."""
+        from app.services.trend_explanation_service import TrendExplanationService
+
+        service = TrendExplanationService.__new__(TrendExplanationService)
+        payload = json.dumps({
+            "summary": "Karnataka leads the comparison.",
+            "winner": "Karnataka",
+            "score_difference": 5.0,
+        })
+
+        with patch("app.services.ai_service.generate_text", new=AsyncMock(return_value=payload)):
+            summary = await service._generate_comparison_summary(self._comparison())
+
+        assert summary.summary == "Karnataka leads the comparison."
+        assert summary.confidence_score == 0.5

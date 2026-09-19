@@ -1,21 +1,70 @@
 /**
  * DevAtlas Centralized API Client
- * Queries Firestore directly from the browser — no server, no Cloud Functions.
- * Public read access granted via firestore.rules.
+ *
+ * Two interchangeable data layers, selected once at module load:
+ *  - `firestore` (default): the browser queries Firestore directly — this is
+ *    what the current static deploy on Firebase Hosting uses.
+ *  - `api`: the browser calls the FastAPI backend under `NEXT_PUBLIC_API_URL`.
+ *
+ *   NEXT_PUBLIC_DATA_MODE=api  NEXT_PUBLIC_API_URL=https://api.example.com
+ *
+ * The public surface (every `api.*` name, parameter list and result type) is
+ * identical in both modes, so components never branch on the mode themselves.
  */
 
 import { firestoreApi } from '@/lib/firestoreApi';
+import { httpApi } from '@/lib/httpApi';
 
 export class APIError extends Error {
   status: number;
   data: any;
+  /** Machine-readable marker (e.g. `API_UNAVAILABLE`); optional. */
+  code?: string;
 
-  constructor(message: string, status: number, data?: any) {
+  constructor(message: string, status: number, data?: any, code?: string) {
     super(message);
     this.name = 'APIError';
     this.status = status;
     this.data = data;
+    this.code = code;
   }
+}
+
+/** Code carried by "this build cannot serve that" rejections. */
+export const API_UNAVAILABLE_CODE = 'API_UNAVAILABLE';
+
+// ─── Data mode ──────────────────────────────────────────────────────────────
+
+export type DataMode = 'firestore' | 'api';
+
+/**
+ * Resolved once at module load (Next.js inlines NEXT_PUBLIC_* at build time).
+ * Anything other than the exact string `api` keeps the Firestore path, so an
+ * unset/typo'd variable can never silently change the deployed data source.
+ */
+export const DATA_MODE: DataMode = process.env.NEXT_PUBLIC_DATA_MODE === 'api' ? 'api' : 'firestore';
+
+/** Configured backend origin (no trailing slash); empty = same origin. */
+export const API_BASE_URL = (process.env.NEXT_PUBLIC_API_URL || '').replace(/\/+$/, '');
+
+const useApiDataLayer = DATA_MODE === 'api';
+
+/**
+ * Server-side-only features: in `firestore` mode they reject with a typed
+ * APIError(501, code `API_UNAVAILABLE`) explaining what is needed (there is no
+ * server in the static deploy); in `api` mode the same names hit the FastAPI
+ * endpoints below.
+ *
+ * The message keeps the "requires the DevAtlas API" wording that the UI's
+ * unavailability helpers recognise.
+ */
+export function unavailableInFirestoreMode(feature: string): APIError {
+  return new APIError(
+    `${feature} requires the DevAtlas API — this build serves Firestore data only (set NEXT_PUBLIC_DATA_MODE=api)`,
+    501,
+    undefined,
+    API_UNAVAILABLE_CODE
+  );
 }
 
 export function getAuthToken(): string | null {
@@ -57,6 +106,13 @@ export interface EcosystemStats {
   devops_repos_count: number;
   blockchain_repos_count: number;
   opensource_repos_count: number;
+  /**
+   * True when the numbers come from a bounded client-side sample instead of
+   * the server-side aggregate document (`stats/ecosystem`). Panels should
+   * label such values as estimates.
+   */
+  estimated?: boolean;
+  generated_at?: string;
 }
 
 export interface Insight {
@@ -159,6 +215,10 @@ export interface AnalyticsGraphData {
   top_domains: Array<{ domain: string; count: number }>;
   growth_trend: TimeSeriesDataPoint[];
   state_comparison: Array<{ state: string; repositories: number }>;
+  /** True when the charts come from a bounded sample, not the aggregates. */
+  estimated?: boolean;
+  /** Number of repository documents sampled for the time series. */
+  sample_size?: number;
 }
 
 export interface TrendDriver {
@@ -336,6 +396,9 @@ export interface CoverageStats {
   repos_total: number;
   repos_with_events: number;
   avg_geocoding_confidence: number;
+  /** True when computed from a bounded client-side sample, not `stats/coverage`. */
+  estimated?: boolean;
+  generated_at?: string;
 }
 
 export interface ActivityLayer {
@@ -354,51 +417,70 @@ export interface AuthResponse {
   };
 }
 
-// ─── API Methods — Firestore direct queries ─────────────────────────────────
-// All data comes from Firestore. No server, no Cloud Functions, no Blaze plan.
+// ─── API Methods ────────────────────────────────────────────────────────────
+// Data source per mode:
+//   firestore → firestoreApi (aggregate docs + bounded queries, no full scans)
+//   api       → httpApi      (FastAPI backend under /api/v1)
 
 export const api = {
   // Ecosystem & India Overview
-  getEcosystemStats: (_year?: number, _signal?: AbortSignal) =>
-    firestoreApi.getEcosystemStats(),
+  getEcosystemStats: (year?: number, signal?: AbortSignal) =>
+    useApiDataLayer
+      ? httpApi.getEcosystemStats(year, signal)
+      : firestoreApi.getEcosystemStats(),
 
-  getInsights: (_limit = 10, _signal?: AbortSignal) =>
-    Promise.resolve([] as Insight[]),
+  getInsights: (limit = 10, signal?: AbortSignal) =>
+    useApiDataLayer
+      ? httpApi.getInsights(limit, signal)
+      : Promise.resolve([] as Insight[]),
 
-  getIndiaOverview: (_year?: number, _signal?: AbortSignal) =>
-    firestoreApi.getIndiaOverview(),
+  getIndiaOverview: (year?: number, signal?: AbortSignal) =>
+    useApiDataLayer
+      ? httpApi.getIndiaOverview(year, signal)
+      : firestoreApi.getIndiaOverview(),
 
   getStateDashboard: (
-    _stateCode: string,
-    _year?: number,
-    _signal?: AbortSignal
+    stateCode: string,
+    year?: number,
+    signal?: AbortSignal
   ): Promise<StateDashboardData> =>
-    Promise.reject(new Error('State dashboard not available in Firestore mode')),
+    useApiDataLayer
+      ? httpApi.getStateDashboard(stateCode, year, signal)
+      : Promise.reject(unavailableInFirestoreMode('State dashboard')),
 
   // Geospatial Activity (map data)
   getGeospatialActivity: (
     bbox: string,
     options: { domain?: string; timeRange?: string; year?: number; limit?: number; signal?: AbortSignal } = {}
-  ) => firestoreApi.getGeospatialActivity(bbox, options),
+  ) =>
+    useApiDataLayer
+      ? httpApi.getGeospatialActivity(bbox, options)
+      : firestoreApi.getGeospatialActivity(bbox, options),
 
   // Analytics Graphs
-  getAnalyticsGraphs: (timeRange: string = 'month', _year?: number, _signal?: AbortSignal) =>
-    firestoreApi.getAnalyticsGraphs(timeRange),
+  getAnalyticsGraphs: (timeRange: string = 'month', year?: number, signal?: AbortSignal) =>
+    useApiDataLayer
+      ? httpApi.getAnalyticsGraphs(timeRange, year, signal)
+      : firestoreApi.getAnalyticsGraphs(timeRange, year),
 
   // Repository Details
-  getRepositoryDetails: (repoId: string, _signal?: AbortSignal) =>
-    firestoreApi.getRepositoryDetails(repoId),
+  getRepositoryDetails: (repoId: string, signal?: AbortSignal) =>
+    useApiDataLayer
+      ? httpApi.getRepositoryDetails(repoId, signal)
+      : firestoreApi.getRepositoryDetails(repoId),
 
-  // AI & Analytics — require server-side processing, not available
+  // AI & Analytics — server-side processing (real endpoints in api mode)
   semanticSearch: (
-    _query: string,
-    _limit = 10,
-    _signal?: AbortSignal
+    query: string,
+    limit = 10,
+    signal?: AbortSignal
   ): Promise<SemanticSearchResponse> =>
-    Promise.reject(new Error('Semantic search requires server-side embeddings')),
+    useApiDataLayer
+      ? httpApi.semanticSearch(query, limit, signal)
+      : Promise.reject(unavailableInFirestoreMode('Semantic search')),
 
   explainTrends: (
-    _params: {
+    params: {
       entity_type?: string;
       entity_name: string;
       metric_name?: string;
@@ -407,37 +489,58 @@ export const api = {
       time_range?: string;
       domain?: string;
     },
-    _signal?: AbortSignal
-  ): Promise<TrendExplanationData> => Promise.reject(new Error('Trend explanation requires server-side AI')),
+    signal?: AbortSignal
+  ): Promise<TrendExplanationData> =>
+    useApiDataLayer
+      ? httpApi.explainTrends(params, signal)
+      : Promise.reject(unavailableInFirestoreMode('Trend explanation')),
 
   compareStates: (
-    _stateA: string,
-    _stateB: string,
-    _year?: number,
-    _signal?: AbortSignal
+    stateA: string,
+    stateB: string,
+    year?: number,
+    signal?: AbortSignal
   ): Promise<StateComparisonResponse> =>
-    Promise.reject(new Error('State comparison requires server-side processing')),
+    useApiDataLayer
+      ? httpApi.compareStates(stateA, stateB, year, signal)
+      : Promise.reject(unavailableInFirestoreMode('State comparison')),
 
-  getDiscovery: (_signal?: AbortSignal) => firestoreApi.getDiscovery(),
+  getDiscovery: (signal?: AbortSignal) =>
+    useApiDataLayer ? httpApi.getDiscovery(signal) : firestoreApi.getDiscovery(),
 
   // Ecosystem scores for Indian states
-  getIndiaEcosystemScores: (_year?: number, _signal?: AbortSignal) =>
-    firestoreApi.getIndiaEcosystemScores(),
+  getIndiaEcosystemScores: (year?: number, signal?: AbortSignal) =>
+    useApiDataLayer
+      ? httpApi.getIndiaEcosystemScores(year, signal)
+      : firestoreApi.getIndiaEcosystemScores(),
 
   // Seed status
-  getSeedStatus: (_signal?: AbortSignal) => firestoreApi.getSeedStatus(),
+  getSeedStatus: (signal?: AbortSignal) =>
+    useApiDataLayer ? httpApi.getSeedStatus(signal) : firestoreApi.getSeedStatus(),
 
-  // Ask DevAtlas Copilot — requires server SSE, not available
+  // Ask DevAtlas Copilot — SSE over fetch in api mode, unavailable in the
+  // static Firestore deploy.
   streamAskDevAtlas: (
-    _query: string,
-    _onChunk: (chunk: string) => void,
-    _onComplete?: () => void,
+    query: string,
+    onChunk: (chunk: string) => void,
+    onComplete?: () => void,
     onError?: (err: any) => void,
-    _onSession?: (sessionId: string) => void,
-    _onCitations?: (citations: any[]) => void,
-    _sessionId?: string,
-  ) => {
-    onError?.(new Error('Copilot requires server-side streaming'));
+    onSession?: (sessionId: string) => void,
+    onCitations?: (citations: any[]) => void,
+    sessionId?: string,
+  ): (() => void) => {
+    if (useApiDataLayer) {
+      return httpApi.streamAskDevAtlas(
+        query,
+        onChunk,
+        onComplete,
+        onError,
+        onSession,
+        onCitations,
+        sessionId
+      );
+    }
+    onError?.(unavailableInFirestoreMode('Ask DevAtlas copilot'));
     return () => {};
   },
 
@@ -446,48 +549,70 @@ export const api = {
     email: string;
     password: string;
   }): Promise<AuthResponse> =>
-    Promise.reject(new Error('Auth not configured in Firestore mode')),
+    Promise.reject(unavailableInFirestoreMode('Auth')),
   register: (_userData: {
     email: string;
     password: string;
     full_name?: string;
   }): Promise<AuthResponse> =>
-    Promise.reject(new Error('Auth not configured in Firestore mode')),
+    Promise.reject(unavailableInFirestoreMode('Auth')),
   getCurrentUser: () => Promise.resolve(null),
 
   // Activity Intelligence
   getActivityHeatmap: (params: { bbox?: string; layer?: string; time_range?: string; limit?: number }) =>
-    firestoreApi.getGeospatialActivity(params.bbox || '', { limit: params.limit }),
+    useApiDataLayer
+      ? httpApi.getActivityHeatmap(params)
+      : firestoreApi.getGeospatialActivity(params.bbox || '', { limit: params.limit }),
 
-  getActivityLayers: () => firestoreApi.getActivityLayers(),
+  getActivityLayers: () =>
+    useApiDataLayer ? httpApi.getActivityLayers() : firestoreApi.getActivityLayers(),
 
   // Activity Scores
-  getStateActivityScores: (_period: string = '30d', _limit: number = 20) =>
-    firestoreApi.getIndiaEcosystemScores() as Promise<any>,
-  getCityActivityScores: (_period: string = '30d', _limit: number = 20) =>
-    firestoreApi.getIndiaEcosystemScores() as Promise<any>,
+  getStateActivityScores: (period: string = '30d', limit: number = 20) =>
+    useApiDataLayer
+      ? httpApi.getStateActivityScores(period, limit)
+      : (firestoreApi.getIndiaEcosystemScores() as Promise<any>),
+  getCityActivityScores: (period: string = '30d', limit: number = 20) =>
+    useApiDataLayer
+      ? httpApi.getCityActivityScores(period, limit)
+      : (firestoreApi.getIndiaEcosystemScores() as Promise<any>),
 
   // Ecosystem Scores
-  getEcosystemScores: (_entityType: string = 'state', _period: string = '30d', _limit: number = 20) =>
-    firestoreApi.getIndiaEcosystemScores() as Promise<any>,
+  getEcosystemScores: (entityType: string = 'state', period: string = '30d', limit: number = 20) =>
+    useApiDataLayer
+      ? httpApi.getEcosystemScores(entityType, period, limit)
+      : (firestoreApi.getIndiaEcosystemScores() as Promise<any>),
 
   // Domain Statistics
-  getDomainStatistics: (_period: string = '30d', _limit: number = 20) =>
-    Promise.resolve([] as DomainStats[]),
+  getDomainStatistics: (period: string = '30d', limit: number = 20) =>
+    useApiDataLayer
+      ? httpApi.getDomainStatistics(period, limit)
+      : Promise.resolve([] as DomainStats[]),
 
-  getLanguageStatistics: (_period: string = '30d', _limit: number = 20) =>
-    Promise.resolve([] as Array<{ language: string; push_events: number; unique_developers: number }>),
+  getLanguageStatistics: (period: string = '30d', limit: number = 20) =>
+    useApiDataLayer
+      ? httpApi.getLanguageStatistics(period, limit)
+      : Promise.resolve([] as Array<{ language: string; push_events: number; unique_developers: number }>),
 
   // Daily & Monthly Activity
-  getDailyActivity: (_days: number = 30) => Promise.resolve([] as Array<Record<string, any>>),
-  getMonthlyActivity: (_months: number = 12) => Promise.resolve([] as Array<Record<string, any>>),
+  getDailyActivity: (days: number = 30) =>
+    useApiDataLayer
+      ? httpApi.getDailyActivity(days)
+      : Promise.resolve([] as Array<Record<string, any>>),
+  getMonthlyActivity: (months: number = 12) =>
+    useApiDataLayer
+      ? httpApi.getMonthlyActivity(months)
+      : Promise.resolve([] as Array<Record<string, any>>),
 
   // Growth Metrics
   getGrowthMetrics: () =>
-    Promise.resolve({ daily_activity: [], weekly_growth_percent: 0, monthly_growth_percent: 0, year_over_year_growth_percent: 0 } as GrowthMetrics),
+    useApiDataLayer
+      ? httpApi.getGrowthMetrics()
+      : Promise.resolve({ daily_activity: [], weekly_growth_percent: 0, monthly_growth_percent: 0, year_over_year_growth_percent: 0 } as GrowthMetrics),
 
   // Coverage Statistics
-  getCoverageStats: () => firestoreApi.getCoverageStats(),
+  getCoverageStats: () =>
+    useApiDataLayer ? httpApi.getCoverageStats() : firestoreApi.getCoverageStats(),
 
   // Admin triggers — no-ops (sync runs via GitHub Actions automatically)
   triggerPushEventIngestion: () => Promise.resolve({ message: 'Sync runs via GitHub Actions', job_id: 'n/a' }),

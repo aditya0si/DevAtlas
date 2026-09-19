@@ -15,6 +15,12 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { api, AnalyticsGraphData, TrendExplanationData } from '@/lib/api';
+import {
+  ApiUnavailableNotice,
+  canCallApiMethod,
+  isApiUnavailableError,
+  useApiUnavailable,
+} from './ui/ApiUnavailable';
 
 interface TimeSeriesDataPoint {
   date: string;
@@ -49,6 +55,15 @@ function GraphSkeleton() {
       <div className="h-8 bg-slate-700 rounded w-1/4" />
       <div className="h-64 bg-slate-700 rounded-lg" />
     </div>
+  );
+}
+
+/** Explicit empty plot — never let an empty series imply a measured zero. */
+function EmptyPlot({ label }: { label: string }) {
+  return (
+    <p data-testid="empty-plot" className="py-16 text-center text-sm text-slate-500">
+      No {label} data for this range yet.
+    </p>
   );
 }
 
@@ -120,6 +135,12 @@ export default function AnalyticsGraphs({ year }: AnalyticsGraphsProps) {
   const [explanation, setExplanation] = useState<TrendExplanationData | null>(null);
   const [explaining, setExplaining] = useState(false);
 
+  // Trend explanation is generated server-side (LLM). In the Firestore-only
+  // build the client stub rejects, so the button states that up front.
+  const { unavailable: explainUnavailable, markUnavailable: markExplainUnavailable } = useApiUnavailable(
+    canCallApiMethod(api.explainTrends)
+  );
+
   useEffect(() => {
     // Abort in-flight requests when the range/year changes so stale responses
     // never overwrite newer data (or update a closed component).
@@ -149,7 +170,7 @@ export default function AnalyticsGraphs({ year }: AnalyticsGraphsProps) {
   }, [timeRange, year]);
 
   const handleExplain = async () => {
-    if (!graphs) return;
+    if (explainUnavailable || !graphs) return;
 
     setExplaining(true);
     setShowExplanation(true);
@@ -172,6 +193,12 @@ export default function AnalyticsGraphs({ year }: AnalyticsGraphsProps) {
       });
       setExplanation(data);
     } catch (error) {
+      if (isApiUnavailableError(error)) {
+        // The build cannot serve explanations — say so, never fake an answer.
+        setExplanation(null);
+        markExplainUnavailable();
+        return;
+      }
       console.error('Failed to get explanation:', error);
     } finally {
       setExplaining(false);
@@ -214,7 +241,9 @@ export default function AnalyticsGraphs({ year }: AnalyticsGraphsProps) {
             whileHover={{ scale: 1.02 }}
             whileTap={{ scale: 0.98 }}
             onClick={handleExplain}
-            disabled={explaining || !graphs}
+            disabled={explaining || !graphs || explainUnavailable}
+            aria-disabled={explaining || !graphs || explainUnavailable ? true : undefined}
+            title={explainUnavailable ? 'Explain needs the DevAtlas API (this build serves Firestore data only)' : undefined}
             className={cn(
               'px-4 py-2 text-sm rounded-lg flex items-center gap-2 transition-all',
               'bg-gradient-to-r from-purple-600 to-blue-600 text-white',
@@ -261,6 +290,13 @@ export default function AnalyticsGraphs({ year }: AnalyticsGraphsProps) {
         </div>
       </div>
 
+      {explainUnavailable && (
+        <ApiUnavailableNotice
+          subject="AI trend explanation"
+          detail="The Explain button stays disabled because explanations are generated server-side."
+        />
+      )}
+
       {/* Graph Container */}
       <motion.div
         key={activeGraph}
@@ -282,17 +318,23 @@ export default function AnalyticsGraphs({ year }: AnalyticsGraphsProps) {
                   <Info size={12} /> Hover for details
                 </span>
               </div>
-              <BarChart 
-                data={graphs.repositories_over_time} 
-                maxValue={maxValue(graphs.repositories_over_time)}
-                colorClass="bg-gradient-to-t from-emerald-600 to-emerald-400"
-                hoverColorClass="from-emerald-500 to-emerald-300"
-              />
-              <div className="flex justify-between mt-3 text-xs text-slate-500">
-                <span>Start</span>
-                <span>{graphs.repositories_over_time.length} data points</span>
-                <span>Now</span>
-              </div>
+              {graphs.repositories_over_time.length === 0 ? (
+                <EmptyPlot label="repositories over time" />
+              ) : (
+                <>
+                  <BarChart
+                    data={graphs.repositories_over_time}
+                    maxValue={maxValue(graphs.repositories_over_time)}
+                    colorClass="bg-gradient-to-t from-emerald-600 to-emerald-400"
+                    hoverColorClass="from-emerald-500 to-emerald-300"
+                  />
+                  <div className="flex justify-between mt-3 text-xs text-slate-500">
+                    <span>Start</span>
+                    <span>{graphs.repositories_over_time.length} data points</span>
+                    <span>Now</span>
+                  </div>
+                </>
+              )}
             </motion.div>
           )}
 
@@ -304,11 +346,15 @@ export default function AnalyticsGraphs({ year }: AnalyticsGraphsProps) {
               exit={{ opacity: 0 }}
             >
               <h3 className="text-lg font-semibold text-slate-200 mb-4">Language Popularity</h3>
-              <div className="space-y-3">
-                {graphs.language_popularity.slice(0, 12).map((lang, i) => (
-                  <LanguageBar key={lang.language} lang={lang} index={i} maxCount={maxCount} />
-                ))}
-              </div>
+              {graphs.language_popularity.length === 0 ? (
+                <EmptyPlot label="language" />
+              ) : (
+                <div className="space-y-3">
+                  {graphs.language_popularity.slice(0, 12).map((lang, i) => (
+                    <LanguageBar key={lang.language} lang={lang} index={i} maxCount={maxCount} />
+                  ))}
+                </div>
+              )}
             </motion.div>
           )}
 
@@ -320,23 +366,27 @@ export default function AnalyticsGraphs({ year }: AnalyticsGraphsProps) {
               exit={{ opacity: 0 }}
             >
               <h3 className="text-lg font-semibold text-slate-200 mb-4">Top Domains</h3>
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-                {graphs.top_domains.map((domain, i) => (
-                  <motion.div
-                    key={domain.domain}
-                    initial={{ opacity: 0, scale: 0.9 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    transition={{ delay: i * 0.05 }}
-                    className="bg-slate-900/50 rounded-xl p-4 border border-slate-700/50 text-center hover:border-indigo-500/50 hover:bg-slate-900 transition-all cursor-pointer group"
-                  >
-                    <p className="w-8 h-8 mx-auto mb-2 rounded-lg bg-indigo-500/20 text-indigo-300 text-sm font-semibold flex items-center justify-center">
-                      {i + 1}
-                    </p>
-                    <p className="text-slate-200 font-medium capitalize group-hover:text-indigo-300 transition-colors">{domain.domain}</p>
-                    <p className="text-2xl font-bold text-indigo-400 mt-1">{domain.count}</p>
-                  </motion.div>
-                ))}
-              </div>
+              {graphs.top_domains.length === 0 ? (
+                <EmptyPlot label="domain" />
+              ) : (
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                  {graphs.top_domains.map((domain, i) => (
+                    <motion.div
+                      key={domain.domain}
+                      initial={{ opacity: 0, scale: 0.9 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      transition={{ delay: i * 0.05 }}
+                      className="bg-slate-900/50 rounded-xl p-4 border border-slate-700/50 text-center hover:border-indigo-500/50 hover:bg-slate-900 transition-all cursor-pointer group"
+                    >
+                      <p className="w-8 h-8 mx-auto mb-2 rounded-lg bg-indigo-500/20 text-indigo-300 text-sm font-semibold flex items-center justify-center">
+                        {i + 1}
+                      </p>
+                      <p className="text-slate-200 font-medium capitalize group-hover:text-indigo-300 transition-colors">{domain.domain}</p>
+                      <p className="text-2xl font-bold text-indigo-400 mt-1">{domain.count}</p>
+                    </motion.div>
+                  ))}
+                </div>
+              )}
             </motion.div>
           )}
 
@@ -348,20 +398,24 @@ export default function AnalyticsGraphs({ year }: AnalyticsGraphsProps) {
               exit={{ opacity: 0 }}
             >
               <h3 className="text-lg font-semibold text-slate-200 mb-4">State Comparison</h3>
-              <div className="h-64 flex items-end gap-2">
-                {graphs.state_comparison.slice(0, 10).map((state, i) => (
-                  <motion.div
-                    key={state.state}
-                    initial={{ height: 0 }}
-                    animate={{ height: `${Math.max(10, (state.repositories / (graphs.state_comparison[0]?.repositories || 1)) * 100)}%` }}
-                    transition={{ delay: i * 0.05, duration: 0.5 }}
-                    className="flex-1 flex flex-col items-center"
-                  >
-                    <div className="w-full bg-gradient-to-t from-purple-600 to-purple-400 rounded-t hover:from-purple-500 hover:to-purple-300 transition-all cursor-pointer" />
-                    <p className="text-xs text-slate-400 mt-2 truncate w-full text-center">{state.state}</p>
-                  </motion.div>
-                ))}
-              </div>
+              {graphs.state_comparison.length === 0 ? (
+                <EmptyPlot label="state comparison" />
+              ) : (
+                <div className="h-64 flex items-end gap-2">
+                  {graphs.state_comparison.slice(0, 10).map((state, i) => (
+                    <motion.div
+                      key={state.state}
+                      initial={{ height: 0 }}
+                      animate={{ height: `${Math.max(10, (state.repositories / (graphs.state_comparison[0]?.repositories || 1)) * 100)}%` }}
+                      transition={{ delay: i * 0.05, duration: 0.5 }}
+                      className="flex-1 flex flex-col items-center"
+                    >
+                      <div className="w-full bg-gradient-to-t from-purple-600 to-purple-400 rounded-t hover:from-purple-500 hover:to-purple-300 transition-all cursor-pointer" />
+                      <p className="text-xs text-slate-400 mt-2 truncate w-full text-center">{state.state}</p>
+                    </motion.div>
+                  ))}
+                </div>
+              )}
             </motion.div>
           )}
 
@@ -373,16 +427,22 @@ export default function AnalyticsGraphs({ year }: AnalyticsGraphsProps) {
               exit={{ opacity: 0 }}
             >
               <h3 className="text-lg font-semibold text-slate-200 mb-4">Growth Trend</h3>
-              <BarChart 
-                data={graphs.growth_trend} 
-                maxValue={maxValue(graphs.growth_trend)}
-                colorClass="bg-gradient-to-t from-orange-600 to-orange-400"
-                hoverColorClass="from-orange-500 to-orange-300"
-              />
-              <div className="flex justify-between mt-3 text-xs text-slate-500">
-                <span>30 days ago</span>
-                <span>Today</span>
-              </div>
+              {graphs.growth_trend.length === 0 ? (
+                <EmptyPlot label="growth trend" />
+              ) : (
+                <>
+                  <BarChart
+                    data={graphs.growth_trend}
+                    maxValue={maxValue(graphs.growth_trend)}
+                    colorClass="bg-gradient-to-t from-orange-600 to-orange-400"
+                    hoverColorClass="from-orange-500 to-orange-300"
+                  />
+                  <div className="flex justify-between mt-3 text-xs text-slate-500">
+                    <span>Earliest</span>
+                    <span>Latest</span>
+                  </div>
+                </>
+              )}
             </motion.div>
           )}
         </AnimatePresence>
@@ -426,7 +486,12 @@ export default function AnalyticsGraphs({ year }: AnalyticsGraphsProps) {
 
               {/* Content */}
               <div className="p-6 space-y-6">
-                {explaining ? (
+                {explainUnavailable ? (
+                  <ApiUnavailableNotice
+                    subject="AI trend explanation"
+                    detail="Nothing was generated — this build serves Firestore data only."
+                  />
+                ) : explaining ? (
                   <div className="flex items-center justify-center h-32">
                     <motion.div
                       animate={{ rotate: 360 }}

@@ -12,8 +12,21 @@ jest.mock('@/lib/api', () => ({
   },
 }));
 
+const ORIGINAL_DATA_MODE = process.env.NEXT_PUBLIC_DATA_MODE;
+
+afterEach(() => {
+  if (ORIGINAL_DATA_MODE === undefined) {
+    delete process.env.NEXT_PUBLIC_DATA_MODE;
+  } else {
+    process.env.NEXT_PUBLIC_DATA_MODE = ORIGINAL_DATA_MODE;
+  }
+});
+
 describe('AskDevAtlas conversational session continuity', () => {
   beforeEach(() => {
+    // These tests exercise the streaming contract, which only exists when the
+    // build talks to the DevAtlas API.
+    process.env.NEXT_PUBLIC_DATA_MODE = 'api';
     streamAskDevAtlas.mockReset();
     // Default: return a cleanup function and invoke onComplete immediately.
     streamAskDevAtlas.mockImplementation(
@@ -102,5 +115,55 @@ describe('AskDevAtlas conversational session continuity', () => {
   it('renders a close button with an accessible label', () => {
     render(<AskDevAtlas query="q1" onClose={jest.fn()} sessionId={undefined} onSessionChange={jest.fn()} />);
     expect(screen.getByLabelText('Close DevAtlas AI copilot')).toBeInTheDocument();
+  });
+
+  it('marks a rejected stream as "needs API" instead of reporting a generic failure', async () => {
+    streamAskDevAtlas.mockImplementation(
+      (
+        _query: string,
+        _onChunk: (c: string) => void,
+        _onComplete?: () => void,
+        onError?: (e: unknown) => void
+      ) => {
+        onError?.(new Error('Copilot requires server-side streaming'));
+        return jest.fn();
+      }
+    );
+
+    render(<AskDevAtlas query="q1" onClose={jest.fn()} sessionId={undefined} onSessionChange={jest.fn()} />);
+
+    const notice = await screen.findByTestId('api-unavailable-notice');
+    expect(notice).toHaveTextContent(
+      'The DevAtlas copilot needs the DevAtlas API — this build serves Firestore data only.'
+    );
+    expect(screen.queryByText('Unable to connect to DevAtlas AI stream.')).not.toBeInTheDocument();
+  });
+});
+
+describe('AskDevAtlas in the Firestore-only build', () => {
+  beforeEach(() => {
+    delete process.env.NEXT_PUBLIC_DATA_MODE;
+    streamAskDevAtlas.mockReset();
+  });
+
+  it('never opens a stream and states that the copilot needs the DevAtlas API', async () => {
+    render(<AskDevAtlas query="q1" onClose={jest.fn()} sessionId={undefined} onSessionChange={jest.fn()} />);
+
+    const notice = await screen.findByTestId('api-unavailable-notice');
+    expect(notice).toHaveTextContent(
+      'The DevAtlas copilot needs the DevAtlas API — this build serves Firestore data only.'
+    );
+    expect(streamAskDevAtlas).not.toHaveBeenCalled();
+    // No fake streaming spinner and no "LIVE ANALYSIS" claim.
+    expect(screen.queryByText('Analyzing developer ecosystem telemetry...')).not.toBeInTheDocument();
+    expect(screen.getByText('NEEDS API')).toBeInTheDocument();
+  });
+
+  it('keeps the close control usable in the unavailable state', () => {
+    const onClose = jest.fn();
+    render(<AskDevAtlas query="q1" onClose={onClose} sessionId={undefined} onSessionChange={jest.fn()} />);
+
+    fireEvent.click(screen.getByLabelText('Close DevAtlas AI copilot'));
+    expect(onClose).toHaveBeenCalled();
   });
 });

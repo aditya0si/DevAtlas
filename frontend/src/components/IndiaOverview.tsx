@@ -141,7 +141,11 @@ export default function IndiaOverview({ year = getCurrentYear() }: IndiaOverview
           </div>
         ) : (
           <div className="p-8 text-center text-slate-400 text-sm">
-            {stats ? 'No state data available for this year yet.' : 'Loading state data...'}
+            {loading
+              ? 'Loading state data...'
+              : stats
+              ? 'No state data available for this year yet.'
+              : 'No state data available — the data source returned nothing.'}
           </div>
         )}
       </div>

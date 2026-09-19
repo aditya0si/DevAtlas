@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Optional
 
-from pydantic import BaseModel, field_validator  # noqa: E402  # noqa: E402  # noqa: E402
+from pydantic import BaseModel, field_validator
 
 
 class RepositoryBase(BaseModel):

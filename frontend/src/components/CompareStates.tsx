@@ -13,6 +13,12 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api, StateComparisonData, ComparisonSummaryData } from "@/lib/api";
+import {
+  ApiUnavailableNotice,
+  canCallApiMethod,
+  isApiUnavailableError,
+  useApiUnavailable,
+} from "./ui/ApiUnavailable";
 
 interface CompareStatesProps {
   initialStateA?: string;
@@ -46,25 +52,28 @@ const TABS: { key: TabType; label: string; icon: React.ReactNode }[] = [
   { key: "orgs", label: "Organizations", icon: <Building2 size={16} /> },
 ];
 
-function StateSelector({ value, onChange, label }: { value: string; onChange: (v: string) => void; label: string }) {
+function StateSelector({ value, onChange, label, disabled = false }: { value: string; onChange: (v: string) => void; label: string; disabled?: boolean }) {
   const [open, setOpen] = useState(false);
-  
+
   return (
     <div className="relative">
       <label className="text-xs text-slate-400 mb-1 block">{label}</label>
       <button
-        onClick={() => setOpen(!open)}
+        onClick={() => !disabled && setOpen(!open)}
+        disabled={disabled}
+        aria-disabled={disabled ? true : undefined}
         className={cn(
           "w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl",
           "text-slate-200 text-left flex items-center justify-between",
-          "hover:border-indigo-500/50 transition-all"
+          "hover:border-indigo-500/50 transition-all",
+          disabled && "opacity-60 cursor-not-allowed hover:border-slate-700"
         )}
       >
         <span>{value}</span>
         <ChevronDown size={16} className={cn("text-slate-400 transition-transform", open && "rotate-180")} />
       </button>
       <AnimatePresence>
-        {open && (
+        {open && !disabled && (
           <motion.div
             initial={{ opacity: 0, y: -5 }}
             animate={{ opacity: 1, y: 0 }}
@@ -134,7 +143,20 @@ export default function CompareStates({ initialStateA = "Bengaluru", initialStat
   const [summary, setSummary] = useState<ComparisonSummaryData | null>(null);
   const [activeTab, setActiveTab] = useState<TabType>("overview");
 
+  // The comparison endpoint is server-side only. In the Firestore-only build the
+  // stub rejects, so the panel states that instead of rendering a spinner or a
+  // generic failure.
+  const { unavailable, markUnavailable } = useApiUnavailable(canCallApiMethod(api.compareStates));
+
   useEffect(() => {
+    // Never call a method that is known to reject in this build.
+    if (unavailable) {
+      setLoading(false);
+      setComparison(null);
+      setSummary(null);
+      return;
+    }
+
     // Abort any in-flight request when the selection/year changes so a stale
     // response never overwrites a newer one (or a closed component).
     const controller = new AbortController();
@@ -150,9 +172,14 @@ export default function CompareStates({ initialStateA = "Bengaluru", initialStat
         }
       })
       .catch((error) => {
-        if (!cancelled && error?.name !== 'AbortError') {
-          console.error("Failed to fetch comparison:", error);
+        if (cancelled || error?.name === 'AbortError') return;
+        if (isApiUnavailableError(error)) {
+          setComparison(null);
+          setSummary(null);
+          markUnavailable();
+          return;
         }
+        console.error("Failed to fetch comparison:", error);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -162,7 +189,7 @@ export default function CompareStates({ initialStateA = "Bengaluru", initialStat
       cancelled = true;
       controller.abort();
     };
-  }, [stateA, stateB, year]);
+  }, [stateA, stateB, year, unavailable, markUnavailable]);
 
   const renderRadarChart = () => {
     if (!comparison) return null;
@@ -241,7 +268,7 @@ export default function CompareStates({ initialStateA = "Bengaluru", initialStat
         className="flex flex-wrap items-end gap-4"
       >
         <div className="flex-1 min-w-[200px]">
-          <StateSelector value={stateA} onChange={setStateA} label="State A" />
+          <StateSelector value={stateA} onChange={setStateA} label="State A" disabled={unavailable} />
         </div>
         
         <div className="flex items-center gap-2 pb-1">
@@ -251,12 +278,19 @@ export default function CompareStates({ initialStateA = "Bengaluru", initialStat
         </div>
         
         <div className="flex-1 min-w-[200px]">
-          <StateSelector value={stateB} onChange={setStateB} label="State B" />
+          <StateSelector value={stateB} onChange={setStateB} label="State B" disabled={unavailable} />
         </div>
       </motion.div>
 
+      {unavailable && (
+        <ApiUnavailableNotice
+          subject="State comparison"
+          detail="Comparisons are computed server-side; both selectors stay disabled in this build."
+        />
+      )}
+
       <AnimatePresence>
-        {loading && (
+        {loading && !unavailable && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}

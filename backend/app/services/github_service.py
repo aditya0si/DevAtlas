@@ -11,7 +11,7 @@ from app.core.cache import get_cache_service
 from app.core.config import get_settings
 from app.models.github import GitHubEvent, Repository
 from app.repositories.github_repository import (
-    GitHubRepository,  # noqa: E402  # noqa: E402  # noqa: E402  # noqa: E402
+    GitHubRepository,
 )
 from app.utils.rate_limiter import GitHubRateLimiter  # noqa: E402
 

@@ -322,17 +322,14 @@ const ProgressLoader = forwardRef<HTMLDivElement, ProgressLoaderProps>(({
   className,
 }, ref) => {
   const [animatedProgress, setAnimatedProgress] = useState(0);
+  const isDeterminate = progress !== undefined;
 
   useEffect(() => {
-    if (progress !== undefined) {
-      setAnimatedProgress(progress);
-    } else {
-      const interval = setInterval(() => {
-        setAnimatedProgress((prev) => (prev >= 100 ? 0 : prev + 10));
-      }, 200);
-      return () => clearInterval(interval);
-    }
-  }, [progress]);
+    // Only a real progress value is animated; without one the bar stays
+    // indeterminate instead of faking a percentage that never resolves.
+    if (!isDeterminate) return;
+    setAnimatedProgress(progress as number);
+  }, [progress, isDeterminate]);
 
   return (
     <div ref={ref} className={cn('w-full', className)}>
@@ -340,14 +337,20 @@ const ProgressLoader = forwardRef<HTMLDivElement, ProgressLoaderProps>(({
         <motion.div
           className="h-full bg-indigo-500 rounded-full"
           initial={{ width: 0 }}
-          animate={{ width: progress !== undefined ? `${animatedProgress}%` : '100%' }}
-          transition={{ duration: 0.3 }}
-          style={{
-            width: progress !== undefined ? `${animatedProgress}%` : undefined,
-          }}
+          animate={
+            isDeterminate
+              ? { width: `${animatedProgress}%` }
+              : { width: ['15%', '85%', '15%'] }
+          }
+          transition={
+            isDeterminate
+              ? { duration: 0.3 }
+              : { duration: 1.6, repeat: Infinity, ease: 'easeInOut' }
+          }
+          style={isDeterminate ? { width: `${animatedProgress}%` } : undefined}
         />
       </div>
-      {showPercentage && progress !== undefined && (
+      {showPercentage && isDeterminate && (
         <motion.p
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}

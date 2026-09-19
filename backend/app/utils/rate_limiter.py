@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 
-import httpx  # noqa: E402  # noqa: E402  # noqa: E402
+import httpx
 
 
 class GitHubRateLimiter:

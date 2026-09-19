@@ -3,12 +3,15 @@ from __future__ import annotations
 from typing import Any
 
 from arq import ArqRedis
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from app.api.deps import require_admin_key
 from app.core.cache import get_cache_service
 from app.core.config import get_settings
 
-router = APIRouter()
+# Every /sync/* route enqueues worker jobs or invalidates caches, i.e. it is an
+# operational action: all of them sit behind the shared X-Admin-Key header.
+router = APIRouter(dependencies=[Depends(require_admin_key)])
 settings = get_settings()
 
 

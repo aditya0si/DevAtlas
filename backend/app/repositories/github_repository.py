@@ -7,7 +7,7 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.github import (  # noqa: E402  # noqa: E402  # noqa: E402  # noqa: E402
+from app.models.github import (
     GitHubEvent,
     Repository,
 )

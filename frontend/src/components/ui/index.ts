@@ -5,6 +5,15 @@ export { default as Button } from './Button';
 export { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from './Card';
 export { Input, SearchInput, Textarea, Select } from './Input';
 export { Badge, LiveBadge, StatusBadge } from './Badge';
+export {
+  ApiUnavailableNotice,
+  apiUnavailableText,
+  canCallApiMethod,
+  isApiMode,
+  isApiUnavailableError,
+  useApiUnavailable,
+} from './ApiUnavailable';
+export { ErrorBoundary } from './ErrorBoundary';
 export { 
   Skeleton, 
   SkeletonText, 

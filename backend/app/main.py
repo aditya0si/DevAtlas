@@ -62,9 +62,62 @@ def validate_required_env() -> list[str]:
     return missing
 
 
+# Minimum length (bytes) accepted for JWT_SECRET_KEY in production. HS256 keys
+# shorter than the hash output add no security margin.
+MIN_JWT_SECRET_BYTES = 32
+
+
+def validate_production_security() -> list[str]:
+    """Return fatal production misconfigurations (empty outside production).
+
+    Development stays permissive: the documented defaults are fine locally and
+    ``validate_required_env`` keeps reporting missing vars as warnings. In
+    production these problems abort startup instead of being logged and
+    ignored, because serving traffic with a guessable JWT secret can let an
+    attacker mint valid access tokens.
+    """
+    problems: list[str] = []
+    if settings.environment != "production":
+        return problems
+
+    secret = settings.jwt_secret_key or ""
+    if not secret or secret == "change-me":
+        problems.append(
+            "JWT_SECRET_KEY is unset or still the development default 'change-me'. "
+            "Set JWT_SECRET_KEY to a random secret of at least "
+            f"{MIN_JWT_SECRET_BYTES} bytes, e.g. run: "
+            "python -c \"import secrets; print(secrets.token_urlsafe(32))\""
+        )
+    elif len(secret.encode("utf-8")) < MIN_JWT_SECRET_BYTES:
+        problems.append(
+            f"JWT_SECRET_KEY is only {len(secret.encode('utf-8'))} bytes; production requires "
+            f"at least {MIN_JWT_SECRET_BYTES} bytes. Generate one with: "
+            "python -c \"import secrets; print(secrets.token_urlsafe(32))\""
+        )
+
+    if not settings.github_token:
+        problems.append(
+            "GITHUB_TOKEN is not set; production requires it for GitHub API access. "
+            "Create a token at https://github.com/settings/tokens and set GITHUB_TOKEN."
+        )
+
+    return problems
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting DevAtlas API — environment=%s", settings.environment)
+
+    # Fail fast: an unsafe production configuration aborts startup (the process
+    # exits via RuntimeError) instead of warning and serving traffic anyway.
+    fatal_config_errors = validate_production_security()
+    if fatal_config_errors:
+        for problem in fatal_config_errors:
+            logger.critical("STARTUP ABORTED: %s", problem)
+        raise RuntimeError(
+            "Refusing to start with an unsafe production configuration: "
+            + " | ".join(fatal_config_errors)
+        )
 
     # Startup validation
     db_status = await validate_database()

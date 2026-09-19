@@ -1,4 +1,4 @@
-import { render, waitFor, act } from '@testing-library/react';
+import { render, screen, waitFor, act } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import DeveloperMap from '../DeveloperMap';
 
@@ -59,6 +59,50 @@ const feature = {
     domain: 'ai',
     description: 'A repo',
   },
+};
+
+/** A repository whose marker weight is declared as measured push activity. */
+const measuredFeature = {
+  ...feature,
+  properties: {
+    ...feature.properties,
+    id: 'repo-measured',
+    activity_source: 'github_events',
+    push_count_30d: 180,
+  },
+};
+
+/** A repository whose marker weight is an estimate derived from stars. */
+const estimatedFeature = {
+  ...feature,
+  properties: {
+    ...feature.properties,
+    id: 'repo-estimated',
+    activity_source: 'stars_estimate',
+  },
+};
+
+/** No provenance published at all: treated (and labelled) as an estimate. */
+const unlabelledFeature = {
+  ...feature,
+  properties: { ...feature.properties, id: 'repo-unlabelled' },
+};
+
+const findHandler = (map: any, event: string, layer: string) => {
+  const call = (map.on.mock.calls as unknown[][]).find(
+    (entry) => entry[0] === event && entry[1] === layer
+  );
+  return call?.[2] as ((e: unknown) => void) | undefined;
+};
+
+/** Invoke every handler registered for an event on a layer (there can be more
+ * than one: the cursor handler and the tooltip handler share 'mouseleave'). */
+const invokeHandlers = (map: any, event: string, layer: string, arg: unknown) => {
+  const calls = (map.on.mock.calls as unknown[][]).filter(
+    (entry) => entry[0] === event && entry[1] === layer
+  );
+  expect(calls.length).toBeGreaterThan(0);
+  calls.forEach((entry) => (entry[2] as (e: unknown) => void)(arg));
 };
 
 describe('DeveloperMap realtime data wiring', () => {
@@ -125,5 +169,139 @@ describe('DeveloperMap realtime data wiring', () => {
     act(() => handler({ features: [{ properties: { id: 'repo-123' } }] }));
 
     expect(onRepositoryClick).toHaveBeenCalledWith('repo-123');
+  });
+
+  it('shows an explicit "no data yet" state when the source has no repositories', async () => {
+    mockUseRealtimeRepos.mockReturnValue({ features: [], loading: false, error: null });
+
+    render(<DeveloperMap activeFilter="All Projects" year={2024} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('no-data-state')).toBeInTheDocument();
+    });
+    expect(screen.getByText('No data yet')).toBeInTheDocument();
+  });
+
+  it('labels the marker weight "pushes / 30d" when the source is GitHub events', async () => {
+    mockUseRealtimeRepos.mockReturnValue({ features: [measuredFeature], loading: false, error: null });
+
+    render(<DeveloperMap activeFilter="All Projects" year={2024} />);
+
+    const legend = await screen.findByTestId('map-activity-source');
+    expect(legend).toHaveAttribute('data-activity-source', 'github_events');
+    expect(legend).toHaveTextContent('pushes / 30d');
+    expect(legend).not.toHaveTextContent('stars estimate');
+  });
+
+  it('labels the marker weight "stars estimate" when no push data is published', async () => {
+    mockUseRealtimeRepos.mockReturnValue({ features: [unlabelledFeature], loading: false, error: null });
+
+    render(<DeveloperMap activeFilter="All Projects" year={2024} />);
+
+    const legend = await screen.findByTestId('map-activity-source');
+    expect(legend).toHaveAttribute('data-activity-source', 'stars_estimate');
+    expect(legend).toHaveTextContent('stars estimate');
+    expect(legend).toHaveTextContent('not measured push activity');
+  });
+
+  it('labels a stars_estimate repository honestly even when a push count is present', async () => {
+    mockUseRealtimeRepos.mockReturnValue({
+      features: [
+        {
+          ...feature,
+          properties: { ...feature.properties, activity_source: 'stars_estimate', push_count_30d: 3 },
+        },
+      ],
+      loading: false,
+      error: null,
+    });
+
+    render(<DeveloperMap activeFilter="All Projects" year={2024} />);
+
+    const legend = await screen.findByTestId('map-activity-source');
+    expect(legend).toHaveAttribute('data-activity-source', 'stars_estimate');
+    expect(legend).toHaveTextContent('stars estimate');
+  });
+
+  it('reports mixed provenance instead of pretending every marker is measured', async () => {
+    mockUseRealtimeRepos.mockReturnValue({
+      features: [measuredFeature, estimatedFeature],
+      loading: false,
+      error: null,
+    });
+
+    render(<DeveloperMap activeFilter="All Projects" year={2024} />);
+
+    const legend = await screen.findByTestId('map-activity-source');
+    expect(legend).toHaveAttribute('data-activity-source', 'mixed');
+    expect(legend).toHaveTextContent('pushes / 30d where published, stars estimate otherwise');
+  });
+
+  it('tooltip shows "pushes / 30d" for a repository with measured activity', async () => {
+    mockUseRealtimeRepos.mockReturnValue({ features: [measuredFeature], loading: false, error: null });
+
+    render(<DeveloperMap activeFilter="All Projects" year={2024} />);
+
+    const map = mockMapInstances[0];
+    await waitFor(() => {
+      expect(findHandler(map, 'mousemove', 'repositories-circle')).toBeDefined();
+    });
+
+    act(() =>
+      findHandler(map, 'mousemove', 'repositories-circle')!({
+        point: { x: 12, y: 18 },
+        features: [{ properties: measuredFeature.properties }],
+      })
+    );
+
+    const tooltip = screen.getByTestId('map-repo-tooltip');
+    expect(tooltip).toHaveAttribute('data-activity-source', 'github_events');
+    expect(screen.getByTestId('map-tooltip-activity')).toHaveTextContent('pushes / 30d');
+    expect(screen.getByTestId('map-tooltip-activity')).toHaveTextContent('180 push events, measured from GitHub');
+  });
+
+  it('tooltip shows "stars estimate" for a repository with no measured activity', async () => {
+    mockUseRealtimeRepos.mockReturnValue({ features: [estimatedFeature], loading: false, error: null });
+
+    render(<DeveloperMap activeFilter="All Projects" year={2024} />);
+
+    const map = mockMapInstances[0];
+    await waitFor(() => {
+      expect(findHandler(map, 'mousemove', 'repositories-circle')).toBeDefined();
+    });
+
+    act(() =>
+      findHandler(map, 'mousemove', 'repositories-circle')!({
+        point: { x: 30, y: 40 },
+        features: [{ properties: estimatedFeature.properties }],
+      })
+    );
+
+    const tooltip = screen.getByTestId('map-repo-tooltip');
+    expect(tooltip).toHaveAttribute('data-activity-source', 'stars_estimate');
+    expect(screen.getByTestId('map-tooltip-activity')).toHaveTextContent('stars estimate');
+    expect(screen.getByTestId('map-tooltip-activity')).toHaveTextContent('not measured push activity');
+  });
+
+  it('clears the tooltip when the pointer leaves the layer', async () => {
+    mockUseRealtimeRepos.mockReturnValue({ features: [measuredFeature], loading: false, error: null });
+
+    render(<DeveloperMap activeFilter="All Projects" year={2024} />);
+
+    const map = mockMapInstances[0];
+    await waitFor(() => {
+      expect(findHandler(map, 'mousemove', 'repositories-circle')).toBeDefined();
+    });
+
+    act(() =>
+      findHandler(map, 'mousemove', 'repositories-circle')!({
+        point: { x: 12, y: 18 },
+        features: [{ properties: measuredFeature.properties }],
+      })
+    );
+    expect(screen.getByTestId('map-repo-tooltip')).toBeInTheDocument();
+
+    act(() => invokeHandlers(map, 'mouseleave', 'repositories-circle', {}));
+    expect(screen.queryByTestId('map-repo-tooltip')).not.toBeInTheDocument();
   });
 });

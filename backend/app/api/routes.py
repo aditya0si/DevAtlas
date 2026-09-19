@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api import (  # noqa: E402  # noqa: E402  # noqa: E402
+from app.api import (
     activity,
     analytics,
     auth,

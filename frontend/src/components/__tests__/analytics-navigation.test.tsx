@@ -1,4 +1,4 @@
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import ImmersiveHome from '../../app/page';
 import { getCurrentYear } from '../../lib/dates';
@@ -37,6 +37,28 @@ jest.mock('@/lib/api', () => ({
     compareStates: (...args: unknown[]) => mockCompareStates(...args),
   },
 }));
+
+const ORIGINAL_DATA_MODE = process.env.NEXT_PUBLIC_DATA_MODE;
+
+// This suite covers analytics in the API-backed build: the panels are expected
+// to call their (mocked) endpoints and render the returned data. The
+// Firestore-only "needs the DevAtlas API" behaviour is covered by
+// api-unavailable.test.tsx.
+beforeEach(() => {
+  process.env.NEXT_PUBLIC_DATA_MODE = 'api';
+});
+
+afterEach(() => {
+  if (ORIGINAL_DATA_MODE === undefined) {
+    delete process.env.NEXT_PUBLIC_DATA_MODE;
+  } else {
+    process.env.NEXT_PUBLIC_DATA_MODE = ORIGINAL_DATA_MODE;
+  }
+});
+
+// Rendering the whole page mounts several async panels at once; the default 5s
+// per-test budget is too tight on a loaded machine, which made this suite flaky.
+jest.setTimeout(30000);
 
 const stats = {
   total_repositories: 100,
@@ -109,6 +131,18 @@ const summary = {
   confidence_score: 0.5,
 };
 
+/** Render the page, navigate to Analytics and wait for every panel to settle. */
+const openAnalytics = async () => {
+  render(<ImmersiveHome />);
+
+  fireEvent.click(screen.getByRole('button', { name: 'Analytics' }));
+
+  // Both panels resolve independently; await their real content before
+  // asserting, so no test depends on wall-clock ordering.
+  await screen.findByText('Summary text');
+  await screen.findByText('Repositories Over Time');
+};
+
 describe('Analytics navigation', () => {
   beforeEach(() => {
     mockGetSeedStatus.mockReset().mockResolvedValue({
@@ -125,60 +159,44 @@ describe('Analytics navigation', () => {
   it('navigates from the sidebar to the Analytics screen', async () => {
     render(<ImmersiveHome />);
 
-    const analyticsBtn = screen.getByRole('button', { name: 'Analytics' });
-    fireEvent.click(analyticsBtn);
+    fireEvent.click(screen.getByRole('button', { name: 'Analytics' }));
+
+    // Await the async panels first — assertions on the settled screen follow.
+    await screen.findByText('Summary text');
 
     expect(screen.getByText('Ecosystem Analytics')).toBeInTheDocument();
     expect(screen.getByText('State Comparison')).toBeInTheDocument();
     expect(screen.getByText(String(getCurrentYear()))).toBeInTheDocument();
-
-    // Flush the CompareStates async response inside act.
-    await waitFor(() => {
-      expect(screen.getByText('Summary text')).toBeInTheDocument();
-    });
   });
 
   it('renders data-backed analytics graphs on the Analytics screen', async () => {
-    render(<ImmersiveHome />);
-    fireEvent.click(screen.getByRole('button', { name: 'Analytics' }));
+    await openAnalytics();
 
-    await waitFor(() => {
-      expect(screen.getByText('Repositories Over Time')).toBeInTheDocument();
-    });
-
-    await waitFor(() => {
-      expect(screen.getByText('Summary text')).toBeInTheDocument();
-    });
+    expect(screen.getByText('Repositories Over Time')).toBeInTheDocument();
+    expect(screen.getByText('State A')).toBeInTheDocument();
+    expect(screen.getByText('State B')).toBeInTheDocument();
   });
 
   it('renders the state comparison component on the Analytics screen', async () => {
-    render(<ImmersiveHome />);
-    fireEvent.click(screen.getByRole('button', { name: 'Analytics' }));
+    await openAnalytics();
 
-    await waitFor(() => {
-      expect(screen.getByText('State A')).toBeInTheDocument();
-    });
+    expect(screen.getByText('State A')).toBeInTheDocument();
     expect(screen.getByText('State B')).toBeInTheDocument();
-
-    await waitFor(() => {
-      expect(screen.getByText('Summary text')).toBeInTheDocument();
-    });
+    expect(screen.getByText('Metrics Comparison')).toBeInTheDocument();
+    expect(screen.getByText('Summary text')).toBeInTheDocument();
   });
 
   it('requests analytics graphs with the selected Time Machine year', async () => {
-    render(<ImmersiveHome />);
-    fireEvent.click(screen.getByRole('button', { name: 'Analytics' }));
-
-    await waitFor(() => {
-      expect(screen.getByText('Repositories Over Time')).toBeInTheDocument();
-    });
-
-    await waitFor(() => {
-      expect(screen.getByText('Summary text')).toBeInTheDocument();
-    });
+    await openAnalytics();
 
     expect(mockGetAnalyticsGraphs).toHaveBeenCalledWith(
       'month',
+      getCurrentYear(),
+      expect.any(AbortSignal)
+    );
+    expect(mockCompareStates).toHaveBeenCalledWith(
+      'Bengaluru',
+      'Mumbai',
       getCurrentYear(),
       expect.any(AbortSignal)
     );
@@ -188,16 +206,15 @@ describe('Analytics navigation', () => {
     render(<ImmersiveHome />);
 
     // The ticker is derived from the real ecosystem stats response (top state + repos).
-    await waitFor(() => {
-      expect(screen.getAllByText('Karnataka leads with 100 repositories').length).toBeGreaterThan(0);
-    });
+    const tickerItems = await screen.findAllByText('Karnataka leads with 100 repositories');
+    expect(tickerItems.length).toBeGreaterThan(0);
 
     // No hardcoded synthetic ticker text is rendered.
     expect(screen.queryByText('Hyderabad AI Repos +12% this week')).toBeNull();
 
-    // Developer Pulse percentages derive from the real AI repo percentage (10%).
-    await waitFor(() => {
-      expect(screen.getByText('+10.0%')).toBeInTheDocument();
-    });
+    // Developer Pulse shows the real AI repo share (10%) — a share, not a
+    // growth rate, so it is labelled and rendered without a "+" prefix.
+    expect(await screen.findByText('AI repos (share of tracked)')).toBeInTheDocument();
+    expect(screen.getByText('10.0%')).toBeInTheDocument();
   });
 });

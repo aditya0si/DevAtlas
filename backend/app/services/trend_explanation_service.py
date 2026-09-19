@@ -18,6 +18,13 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
+# Confidence policy (S-04): confidence is derived from the data an explanation
+# actually used, never asserted with a hardcoded literal. Only a provider that
+# wrote the narrative is credited at the AI level; the deterministic fallbacks
+# sit at the bottom of the range because they only have aggregate counts.
+AI_NARRATIVE_CONFIDENCE = 0.5
+
+
 class EntityType(str, Enum):
     """Types of entities that can be explained."""
     NATIONAL = "national"
@@ -338,6 +345,10 @@ Your explanations should:
             explanation_data.setdefault("entity_type", entity_type)
             explanation_data.setdefault("entity_name", entity_name)
             explanation_data.setdefault("time_range", time_range)
+            # A provider that wrote the narrative but did not self-report a
+            # confidence gets the AI-narrative baseline, never a hardcoded
+            # "confident" default.
+            explanation_data.setdefault("confidence_score", AI_NARRATIVE_CONFIDENCE)
             return TrendExplanation(**explanation_data)
 
         except Exception:
@@ -401,6 +412,32 @@ Provide a JSON response with:
 
 Focus on explaining WHY this happened, not just WHAT happened."""
 
+    @staticmethod
+    def _estimate_structured_confidence(
+        context: dict[str, Any],
+        current_value: float,
+        previous_value: float,
+    ) -> float:
+        """Confidence for the no-AI structured explanation, from the data used.
+
+        The structured path only has the two aggregate values plus whatever
+        breakdown rows ``_gather_context`` returned, so it starts at the
+        "counts only" level (0.25), drops for thin samples, and gains a small
+        amount when breakdown rows back its key drivers.
+        """
+        breakdown_rows = (
+            len(context.get("repository_categories") or [])
+            + len(context.get("language_adoption") or [])
+            + len(context.get("organization_activity") or [])
+        )
+        sample = max(current_value, previous_value)
+        if sample <= 0:
+            return 0.1
+        confidence = 0.15 if sample < 10 else 0.25
+        if breakdown_rows:
+            confidence += 0.05
+        return min(confidence, 0.3)
+
     def _generate_structured_explanation(
         self,
         entity_type: EntityType,
@@ -453,7 +490,11 @@ Focus on explaining WHY this happened, not just WHAT happened."""
             key_drivers=key_drivers,
             unusual_observations=[],
             notable_changes=[f"{direction.value.title()} trend of {abs(pct_change):.1f}%"],
-            confidence_score=0.6,
+            confidence_score=self._estimate_structured_confidence(
+                context=context,
+                current_value=current_value,
+                previous_value=previous_value,
+            ),
             entity_type=entity_type,
             entity_name=entity_name,
             time_range=time_range,
@@ -709,6 +750,10 @@ Provide data-driven comparisons that:
             summary_data.setdefault("entity_a", comparison.state_a)
             summary_data.setdefault("entity_b", comparison.state_b)
             summary_data.setdefault("generated_at", datetime.now(timezone.utc))
+            # A provider that wrote the comparison but did not self-report a
+            # confidence gets the AI-narrative baseline, never a hardcoded
+            # "confident" default.
+            summary_data.setdefault("confidence_score", AI_NARRATIVE_CONFIDENCE)
             return ComparisonSummary(**summary_data)
 
         except Exception:
@@ -755,6 +800,29 @@ Provide a JSON response with:
 9. recommendations: Data-driven recommendations
 10. confidence_score: 0.0-1.0 based on data completeness"""
 
+    @staticmethod
+    def _estimate_comparison_confidence(comparison: StateComparisonData) -> float:
+        """Confidence for the no-AI structured comparison summary.
+
+        Derived from the comparison data actually available: both sides need
+        repository counts for the summary to mean anything, thin samples score
+        lower, and the presence of developer/star evidence raises it slightly.
+        """
+        counts = [comparison.repository_count_a, comparison.repository_count_b]
+        if max(counts) <= 0:
+            return 0.1
+        if min(counts) < 10:
+            return 0.15
+        evidence = [
+            comparison.developer_activity_a,
+            comparison.developer_activity_b,
+            comparison.avg_stars_a,
+            comparison.avg_stars_b,
+        ]
+        if not any(evidence):
+            return 0.2
+        return 0.25
+
     def _generate_structured_summary(
         self,
         comparison: StateComparisonData,
@@ -781,10 +849,33 @@ Provide a JSON response with:
             winner = "tie"
 
         summary = f"{comparison.state_a} and {comparison.state_b} show distinct developer ecosystem patterns. "
-        if score_a > score_b:
-            summary += f"{comparison.state_a} leads with stronger repository diversity and developer activity."
+        if abs(score_a - score_b) < 5:
+            summary += f"The composite activity scores are close ({score_a:.1f} vs {score_b:.1f})."
+        elif score_a > score_b:
+            summary += (
+                f"{comparison.state_a} leads on the composite activity score "
+                f"({score_a:.1f} vs {score_b:.1f})."
+            )
         else:
-            summary += f"{comparison.state_b} leads with higher innovation metrics and community engagement."
+            summary += (
+                f"{comparison.state_b} leads on the composite activity score "
+                f"({score_a:.1f} vs {score_b:.1f})."
+            )
+
+        # Deterministic fallback: state only what the numbers support, never
+        # canned qualitative claims (that is the AI provider's job).
+        weaknesses_a: list[str] = []
+        weaknesses_b: list[str] = []
+        if comparison.repository_count_a < comparison.repository_count_b:
+            weaknesses_a.append(
+                f"Fewer repositories than {comparison.state_b}: "
+                f"{comparison.repository_count_a} vs {comparison.repository_count_b}"
+            )
+        if comparison.repository_count_b < comparison.repository_count_a:
+            weaknesses_b.append(
+                f"Fewer repositories than {comparison.state_a}: "
+                f"{comparison.repository_count_b} vs {comparison.repository_count_a}"
+            )
 
         return ComparisonSummary(
             entity_a=comparison.state_a,
@@ -800,11 +891,13 @@ Provide a JSON response with:
                 f"{comparison.repository_count_b} repositories",
                 f"{comparison.developer_activity_b} active developers",
             ],
-            weaknesses_a=["Growth rate below potential"],
-            weaknesses_b=["Growth rate below potential"],
-            opportunities=["Cross-state collaboration", "Shared technology栈"],
-            recommendations=["Focus on developer engagement", "Increase open source participation"],
-            confidence_score=0.7,
+            weaknesses_a=weaknesses_a,
+            weaknesses_b=weaknesses_b,
+            # No data-driven basis in the deterministic fallback: leave the
+            # advisory fields empty rather than inventing advice.
+            opportunities=[],
+            recommendations=[],
+            confidence_score=self._estimate_comparison_confidence(comparison),
         )
 
     async def _generate_comparison_insights(

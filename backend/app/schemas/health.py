@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel  # noqa: E402  # noqa: E402  # noqa: E402
+from pydantic import BaseModel
 
 
 class HealthResponse(BaseModel):

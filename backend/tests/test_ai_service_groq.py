@@ -3,8 +3,9 @@
 Covers settings/provider selection (Groq first when configured, backward
 compatibility for OpenAI/Gemini, no-key fallback), Groq structured
 classification and streaming via the OpenAI SDK against Groq's
-OpenAI-compatible base URL, and the embedding abstraction (Groq raises so the
-fallback chain skips it).
+OpenAI-compatible base URL, the embedding abstraction (Groq raises so the
+fallback chain skips it), and the S-04 guarantee that no provider fabricates
+analysis text (``AIUnavailableError`` instead of invented narratives).
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import pytest
 
 from app.services.ai_service import (
     AIServiceFactory,
+    AIUnavailableError,
     FallbackChainProvider,
     GeminiProvider,
     GroqProvider,
@@ -261,18 +263,16 @@ class TestGroqProvider:
             await provider.generate_embedding("some text")
 
     @pytest.mark.asyncio
-    async def test_stream_text_without_key_yields_baseline(self, monkeypatch):
-        """Without a Groq key, streaming yields a baseline instead of raising."""
+    async def test_stream_text_without_key_raises_ai_unavailable(self, monkeypatch):
+        """Without a Groq key, streaming refuses instead of inventing a narrative."""
         from app.services import ai_service
 
         monkeypatch.setattr(ai_service.settings, "groq_api_key", None)
 
         provider = GroqProvider()
-        collected = []
-        async for chunk in provider.stream_text("system", "user query"):
-            collected.append(chunk)
-
-        assert "".join(collected).startswith("Groq API key is not configured")
+        with pytest.raises(AIUnavailableError, match="Groq is not available"):
+            async for _ in provider.stream_text("system", "user query"):
+                pass  # pragma: no cover - nothing may be yielded
 
 
 class TestEmbeddingAbstraction:
@@ -358,3 +358,100 @@ class TestStartupValidation:
 
         missing = main.validate_required_env()
         assert "OPENAI_API_KEY, GEMINI_API_KEY, or GROQ_API_KEY" in missing
+
+
+class TestNoFabricatedOutput:
+    """S-04: the provider layer never presents invented text as model output."""
+
+    @pytest.mark.asyncio
+    async def test_mock_provider_refuses_to_stream(self):
+        """MockAIProvider does not impersonate a model; it raises instead."""
+        provider = MockAIProvider()
+
+        with pytest.raises(AIUnavailableError, match="deterministic placeholder"):
+            async for _ in provider.stream_text("system", "user query"):
+                pass  # pragma: no cover - nothing may be yielded
+
+    @pytest.mark.asyncio
+    async def test_mock_classification_is_neutral_and_labelled(self):
+        """The deterministic classification is non-committal and self-labelled."""
+        provider = MockAIProvider()
+
+        result = await provider.classify_repository("Classify this repository")
+
+        assert result["domain"] == "opensource"
+        assert result["source"] == "deterministic-fallback"
+        # It must not claim specific technologies for every repository.
+        assert result["primary_technology"] == "Unknown"
+        assert result["framework"] == "None"
+
+    @pytest.mark.asyncio
+    async def test_fallback_chain_raises_when_all_providers_exhausted(self, monkeypatch):
+        """No keys at all (and no Ollama) must raise, not serve a mock narrative."""
+        from app.services import ai_service
+
+        monkeypatch.setattr(ai_service.settings, "groq_api_key", None)
+        monkeypatch.setattr(ai_service.settings, "openai_api_key", None)
+        monkeypatch.setattr(ai_service.settings, "gemini_api_key", None)
+        monkeypatch.setattr(
+            ai_service.OllamaProvider,
+            "_check_available",
+            AsyncMock(return_value=False),
+        )
+
+        chain = FallbackChainProvider()
+        with pytest.raises(AIUnavailableError, match="No AI provider is available"):
+            async for _ in chain.stream_text("system", "user query"):
+                pass  # pragma: no cover - nothing may be yielded
+
+    @pytest.mark.asyncio
+    async def test_fallback_chain_streams_from_first_working_provider(self):
+        """A failing provider is skipped; genuine text from the next one is used."""
+        from app.services import ai_service
+
+        class FailingProvider(ai_service.AIProvider):
+            async def classify_repository(self, prompt):  # pragma: no cover
+                raise AIUnavailableError("unavailable")
+
+            async def generate_embedding(self, text):  # pragma: no cover
+                raise AIUnavailableError("unavailable")
+
+            async def stream_text(self, system_prompt, user_prompt):
+                raise AIUnavailableError("unavailable")
+                yield ""  # pragma: no cover - keeps this an async generator
+
+        class WorkingProvider(ai_service.AIProvider):
+            async def classify_repository(self, prompt):  # pragma: no cover
+                raise AIUnavailableError("unavailable")
+
+            async def generate_embedding(self, text):  # pragma: no cover
+                raise AIUnavailableError("unavailable")
+
+            async def stream_text(self, system_prompt, user_prompt):
+                yield "real model text"
+
+        chain = FallbackChainProvider()
+        chain.providers = [FailingProvider(), WorkingProvider()]
+
+        collected = []
+        async for chunk in chain.stream_text("system", "user query"):
+            collected.append(chunk)
+
+        assert "".join(collected) == "real model text"
+
+    @pytest.mark.asyncio
+    async def test_generate_text_raises_when_nothing_available(self, monkeypatch):
+        """generate_text() propagates AIUnavailableError instead of mock text."""
+        from app.services import ai_service
+
+        monkeypatch.setattr(ai_service.settings, "groq_api_key", None)
+        monkeypatch.setattr(ai_service.settings, "openai_api_key", None)
+        monkeypatch.setattr(ai_service.settings, "gemini_api_key", None)
+        monkeypatch.setattr(
+            ai_service.OllamaProvider,
+            "_check_available",
+            AsyncMock(return_value=False),
+        )
+
+        with pytest.raises(AIUnavailableError):
+            await ai_service.generate_text("system", "user query")

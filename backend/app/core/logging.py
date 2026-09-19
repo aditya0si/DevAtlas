@@ -43,7 +43,13 @@ def setup_logging(level: str = "INFO") -> None:
     root_logger.handlers = [handler]
 
     # Third party loggers - reduce noise
-    for logger_name in ["uvicorn", "uvicorn.access", "httpx", "httpcore"]:
+    #
+    # ``sqlalchemy.engine`` is included as belt-and-braces: in production the engine is created with
+    # echo=False (see app/core/database.py), and a parameterised probe confirmed that no statement
+    # text or bound parameters reach the logs in that mode. It matters in development, where echo is
+    # on and statements + parameters (including bcrypt and token hashes) are written to stdout — use
+    # DB_ECHO=false to opt out locally.
+    for logger_name in ["uvicorn", "uvicorn.access", "httpx", "httpcore", "sqlalchemy.engine"]:
         logger = logging.getLogger(logger_name)
         logger.setLevel(logging.WARNING)
 

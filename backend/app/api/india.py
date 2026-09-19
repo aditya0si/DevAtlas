@@ -10,7 +10,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db
+from app.api.deps import enforce_ai_rate_limit, get_db
 from app.models.github import Repository
 from app.schemas.india import (
     AnalyticsGraphResponse,
@@ -26,9 +26,13 @@ from app.schemas.india import (
     TimeSeriesDataPoint,
     TrendExplainRequest,
 )
+from app.services.ai_service import AIUnavailableError
 from app.services.insight_service import InsightService
 
 router = APIRouter()
+
+# Honest status when no real AI provider can answer (no fabricated fallback).
+AI_UNAVAILABLE_DETAIL = "No AI provider is configured for this deployment"
 
 
 @router.get("/stats", response_model=EcosystemStatsResponse)
@@ -639,7 +643,7 @@ async def get_discovery(
     )
 
 
-@router.post("/search/semantic", response_model=SemanticSearchResponse)
+@router.post("/search/semantic", response_model=SemanticSearchResponse, dependencies=[Depends(enforce_ai_rate_limit)])
 async def semantic_search(
     request: SemanticSearchRequest,
     db: AsyncSession = Depends(get_db),
@@ -810,7 +814,7 @@ def _calculate_growth_trend(repo: Repository) -> str:
 
 # Trend Explanation Endpoints
 
-@router.post("/trends/explain", response_model=dict)
+@router.post("/trends/explain", response_model=dict, dependencies=[Depends(enforce_ai_rate_limit)])
 async def explain_trend(
     request: TrendExplainRequest,
     db: AsyncSession = Depends(get_db),
@@ -899,7 +903,7 @@ async def get_comparison_insights(
     return [i.model_dump() for i in insights]
 
 
-@router.get("/ask/stream")
+@router.get("/ask/stream", dependencies=[Depends(enforce_ai_rate_limit)])
 async def ask_devatlas_stream(
     query: str = Query(..., description="Query for DevAtlas AI Copilot"),
     session_id: Optional[str] = Query(default=None, description="Chat session ID for multi-turn conversation"),
@@ -958,6 +962,12 @@ async def ask_devatlas_stream(
             await db.commit()
 
             yield "data: [DONE]\n\n"
+        except AIUnavailableError:
+            # No provider can generate real text: emit a single honest error
+            # event and stop. Nothing is persisted and no text is invented.
+            err_data = json.dumps({"error": AI_UNAVAILABLE_DETAIL})
+            yield f"data: {err_data}\n\n"
+            yield "data: [DONE]\n\n"
         except Exception as e:
             err_data = json.dumps({"error": str(e)})
             yield f"data: {err_data}\n\n"
@@ -966,7 +976,7 @@ async def ask_devatlas_stream(
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
-@router.post("/ask")
+@router.post("/ask", dependencies=[Depends(enforce_ai_rate_limit)])
 async def ask_devatlas(
     request: dict,
     db: AsyncSession = Depends(get_db),
@@ -1005,9 +1015,14 @@ async def ask_devatlas(
     )
 
     provider = AIServiceFactory.get_provider()
-    chunks = []
-    async for chunk in provider.stream_text(system_prompt=system_prompt, user_prompt=query):
-        chunks.append(chunk)
+    chunks: list[str] = []
+    try:
+        async for chunk in provider.stream_text(system_prompt=system_prompt, user_prompt=query):
+            chunks.append(chunk)
+    except AIUnavailableError as exc:
+        # Every provider refused or is unconfigured: report the outage honestly
+        # instead of returning fabricated analysis (no answer is persisted).
+        raise HTTPException(status_code=503, detail=AI_UNAVAILABLE_DETAIL) from exc
 
     answer = "".join(chunks)
     await chat_repo.add_message(session.id, "assistant", answer)
@@ -1018,8 +1033,21 @@ async def ask_devatlas(
         "answer": answer,
         "session_id": session.id,
         "citations": [c.model_dump() for c in rag_result.citations],
-        "confidence_score": 0.95,
+        "confidence_score": citation_confidence(rag_result.citations),
     }
+
+
+def citation_confidence(citations: list) -> float:
+    """Confidence of a grounded copilot answer: mean RAG citation similarity.
+
+    Derived from the retrieval scores that actually produced the citations
+    (``GroundedCitation.similarity_score``), rounded to 4 decimal places; an
+    answer with no retrieved citations reports ``0.0`` rather than a fixed
+    constant.
+    """
+    if not citations:
+        return 0.0
+    return round(sum(float(c.similarity_score) for c in citations) / len(citations), 4)
 
 
 def _build_history_context(messages: list) -> str:
