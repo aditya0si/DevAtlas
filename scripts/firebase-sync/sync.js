@@ -40,16 +40,44 @@ const {
   summarizeCoverage,
 } = require("./activity");
 
-// ─── Init Firebase Admin with service account from env ─────────────────────
+const {
+  classifyFailure,
+  formatFailureLine,
+  redactSecrets,
+} = require("./status");
 
-const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-});
-const db = admin.firestore();
+// ─── Firebase Admin, initialised lazily ────────────────────────────────────
+//
+// Importing this module must not touch credentials, the network or Firestore:
+// the test suite imports it directly. The service account is parsed, the app is
+// initialised and the Firestore handle is created on the first getDb() call,
+// which happens inside main().
+
+let dbInstance = null;
+
+function getDb() {
+  if (dbInstance) return dbInstance;
+  const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
+  if (!raw) throw new Error("FIREBASE_SERVICE_ACCOUNT is not set");
+  const serviceAccount = JSON.parse(raw);
+  if (!admin.apps || admin.apps.length === 0) {
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount),
+    });
+  }
+  dbInstance = admin.firestore();
+  return dbInstance;
+}
 
 const GITHUB_TOKEN = process.env.GIT_TOKEN;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+
+/** Secret values that must never reach a log line or a Firestore document. */
+function secretValues() {
+  return [process.env.GIT_TOKEN, process.env.GEMINI_API_KEY].filter(
+    (value) => typeof value === "string" && value.length > 0
+  );
+}
 
 // ─── Tunables ──────────────────────────────────────────────────────────────
 
@@ -93,40 +121,118 @@ function githubHeaders() {
   };
 }
 
-async function ghFetch(pathname, params = {}) {
+class SyncError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.name = "SyncError";
+    this.code = code;
+  }
+}
+
+/**
+ * One logical GitHub request, including the existing wait-and-retry shape
+ * (three attempts; a 403/429 with a reset under 180 s waits and retries).
+ *
+ * Returns a discriminated result instead of throwing so that leaf calls can
+ * keep treating any failure as "skip this item" while the discovery root can
+ * fail the whole run. `io` is a test seam: `{ now, sleep, fetch }`.
+ */
+async function ghRequest(pathname, params = {}, io = {}) {
+  const now = io.now || (() => Date.now());
+  const wait = io.sleep || sleep;
+  const doFetch = io.fetch || ((...args) => fetch(...args));
+
   const url = new URL(pathname, GITHUB_API);
   Object.entries(params).forEach(([k, v]) => {
     if (v != null) url.searchParams.set(k, String(v));
   });
 
+  // Default when every attempt is a network error, or when the loop runs out
+  // on repeated short rate limits (the code and detail are updated below).
+  let lastFailure = { code: "github_network", detail: `network error on ${pathname}` };
+
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const res = await fetch(url, { headers: githubHeaders() });
+      const res = await doFetch(url, { headers: githubHeaders() });
 
-      if (res.status === 200) return await res.json();
+      if (res.status === 200) return { ok: true, body: await res.json() };
+
+      // 401 wins over the rate-limit branch below: bad credentials are never a
+      // reason to wait, and the whole point of this change is that a 401 on the
+      // discovery root is reported as an auth failure.
+      if (res.status === 401) {
+        console.warn(`GitHub API ${res.status} for ${url.pathname}`);
+        return {
+          ok: false,
+          code: "github_auth",
+          detail: `GitHub rejected the credentials for ${pathname} (HTTP 401)`,
+        };
+      }
 
       const remaining = parseInt(res.headers.get("x-ratelimit-remaining") || "1", 10);
       if (remaining === 0 || res.status === 403 || res.status === 429) {
         const reset = parseInt(res.headers.get("x-ratelimit-reset") || "0", 10);
-        const waitSec = Math.max(reset - Math.floor(Date.now() / 1000), 5);
+        const waitSec = Math.max(reset - Math.floor(now() / 1000), 5);
         if (waitSec < 180) {
           console.log(`Rate limited, waiting ${waitSec}s...`);
-          await sleep(waitSec * 1000);
+          lastFailure = {
+            code: "github_rate_limited",
+            detail: `GitHub rate limit still active after 3 attempts (HTTP ${res.status})`,
+          };
+          await wait(waitSec * 1000);
           continue;
         }
         console.error(`Rate limit too long (${waitSec}s), stopping`);
-        return null;
+        return {
+          ok: false,
+          code: "github_rate_limited",
+          detail: `GitHub rate limit resets in ${waitSec}s (HTTP ${res.status}); not waiting`,
+        };
       }
 
-      if (res.status === 404) return null;
+      if (res.status === 404) {
+        return { ok: false, code: "github_http", detail: `GitHub returned HTTP 404 for ${pathname}` };
+      }
       console.warn(`GitHub API ${res.status} for ${url.pathname}`);
-      return null;
+      return {
+        ok: false,
+        code: "github_http",
+        detail: `GitHub returned HTTP ${res.status} for ${pathname}`,
+      };
     } catch (err) {
-      console.error(`Network error on ${pathname}:`, err.message);
-      if (attempt < 2) await sleep(2000);
+      const message = redactSecrets(
+        String(err && err.message ? err.message : err),
+        secretValues()
+      );
+      console.error(`Network error on ${pathname}:`, message);
+      lastFailure = {
+        code: "github_network",
+        detail: `network error on ${pathname}: ${message}`,
+      };
+      if (attempt < 2) await wait(2000);
     }
   }
-  return null;
+  return { ok: false, ...lastFailure };
+}
+
+/**
+ * Leaf calls (per-user, per-repo, events): unchanged behaviour — any failure
+ * means "skip this item" and the caller sees null.
+ */
+async function ghFetch(pathname, params = {}, io = {}) {
+  const result = await ghRequest(pathname, params, io);
+  return result.ok ? result.body : null;
+}
+
+/**
+ * The discovery root (/search/users): a failure is fatal. A non-200 used to be
+ * indistinguishable from an empty city here, which is exactly how a 401 became
+ * "No users found".
+ */
+async function ghGetRequired(pathname, params = {}, io = {}) {
+  const result = await ghRequest(pathname, params, io);
+  if (result.ok) return result.body;
+  throw new SyncError(result.code, result.detail);
 }
 
 // ─── Gemini classification ─────────────────────────────────────────────────
@@ -283,10 +389,10 @@ async function geocodeLocationThrottled(location) {
  * and a graceful skip when the call fails: activity is additive, it must never
  * fail the sync. `repos` supplies the star count used as the reach proxy.
  */
-async function fetchDeveloperActivity(login, repos) {
+async function fetchDeveloperActivity(login, repos, io = {}) {
   let events;
   try {
-    events = await ghFetch(`/users/${login}/events/public`, { per_page: 100 });
+    events = await ghFetch(`/users/${login}/events/public`, { per_page: 100 }, io);
   } catch (err) {
     console.warn(`  Events fetch failed for ${login}: ${err.message} — skipping activity`);
     return null;
@@ -317,7 +423,7 @@ const INDIAN_CITIES = [
   "Bhubaneswar", "Mysuru", "Mangalore", "Noida", "Gurugram",
 ];
 
-async function getNextCityIndex() {
+async function getNextCityIndex(db) {
   const doc = await db.collection("stats").doc("sync-pointer").get();
   const current = doc.exists ? (doc.data().city_index || 0) : 0;
   const next = (current + 1) % INDIAN_CITIES.length;
@@ -331,23 +437,25 @@ async function getNextCityIndex() {
 
 // ─── Main sync ─────────────────────────────────────────────────────────────
 
-async function main() {
+async function main({ db = getDb(), io = {} } = {}) {
   console.log("=== DevAtlas India Sync ===");
   let reposSynced = 0;
   let devsDiscovered = 0;
   let activityScored = 0;
   let activitySkipped = 0;
 
-  const cityIndex = await getNextCityIndex();
+  const cityIndex = await getNextCityIndex(db);
   const city = INDIAN_CITIES[cityIndex];
   console.log(`Discovering developers in: ${city}`);
 
-  // Phase 1: Discover Indian developers via GitHub Search API
-  const searchResults = await ghFetch("/search/users", {
+  // Phase 1: Discover Indian developers via GitHub Search API.
+  // This is the discovery root: a failed request (bad credentials, rate limit,
+  // network) is fatal and must never be reported as an empty city.
+  const searchResults = await ghGetRequired("/search/users", {
     q: `location:${city} sort:followers`,
     per_page: 30,
     page: 1,
-  });
+  }, io);
 
   const userSummaries = searchResults && Array.isArray(searchResults.items)
     ? searchResults.items
@@ -360,7 +468,7 @@ async function main() {
   }
 
   for (const userSummary of userSummaries) {
-    const userData = await ghFetch(`/users/${userSummary.login}`);
+    const userData = await ghFetch(`/users/${userSummary.login}`, {}, io);
     if (!userData || userData.type !== "User") continue;
 
     const location = userData.location || "";
@@ -403,14 +511,14 @@ async function main() {
       sort: "updated",
       per_page: 10,
       page: 1,
-    });
+    }, io);
     const repoList = Array.isArray(repos) ? repos : [];
 
     // S-12: real activity score from the developer's public events. Skipped
     // when the developer has no non-fork repositories to annotate.
     let activityFields = null;
     if (repoList.some((repo) => repo && !repo.fork)) {
-      const activity = await fetchDeveloperActivity(userData.login, repoList);
+      const activity = await fetchDeveloperActivity(userData.login, repoList, io);
       if (activity) {
         activityFields = {
           ...activity,
@@ -528,10 +636,10 @@ async function main() {
   }
 
   // Phase 3: Sweep — classify and geocode backlog
-  const sweep = await sweepBacklog();
+  const sweep = await sweepBacklog(db);
 
   // Phase 4: Aggregate documents the frontend reads (server-side, cheap)
-  const stats = await writeAggregateStats();
+  const stats = await writeAggregateStats(db);
 
   // Update stats
   await db.collection("stats").doc("latest").set({
@@ -555,7 +663,9 @@ async function main() {
     `sweep=[${sweep.classified} classified, ${sweep.geocoded} geocoded, ${sweep.failed} failed], ` +
     `stats=[${stats.ecosystem.total_repositories} repos, ${stats.ecosystem.total_developers} devs]`
   );
-  process.exit(0);
+
+  // Exit 0 is decided by runCli(); main() stays callable from tests.
+  return { city, reposSynced, devsDiscovered, activityScored, activitySkipped, sweep, stats };
 }
 
 // ─── Backlog sweep (S-09) ──────────────────────────────────────────────────
@@ -584,9 +694,9 @@ async function recordAttemptFailure(ref, counterField) {
   });
 }
 
-async function sweepBacklog() {
-  const classified = await sweepClassifyBacklog();
-  const geocoded = await sweepGeocodeBacklog();
+async function sweepBacklog(db) {
+  const classified = await sweepClassifyBacklog(db);
+  const geocoded = await sweepGeocodeBacklog(db);
   console.log(
     `Backlog sweep: classified ${classified.ok}/${classified.scanned} (${classified.failed} failed), ` +
     `geocoded ${geocoded.ok}/${geocoded.scanned} (${geocoded.failed} failed, ${geocoded.skipped} without location)`
@@ -599,7 +709,7 @@ async function sweepBacklog() {
   };
 }
 
-async function sweepClassifyBacklog() {
+async function sweepClassifyBacklog(db) {
   const snap = await db.collection("repositories")
     .where("classified", "==", false)
     .where("classification_attempts", "<", MAX_SYNC_ATTEMPTS)
@@ -632,7 +742,7 @@ async function sweepClassifyBacklog() {
   return { ok, failed, scanned: snap.size };
 }
 
-async function sweepGeocodeBacklog() {
+async function sweepGeocodeBacklog(db) {
   const snap = await db.collection("repositories")
     .where("geocoded", "==", false)
     .where("geocode_attempts", "<", MAX_SYNC_ATTEMPTS)
@@ -691,7 +801,7 @@ const DEV_STATS_FIELDS = ["location", "coordinates"];
 
 let useStatsProjection = true;
 
-async function statsPage(name, cursor, projection, withProjection) {
+async function statsPage(db, name, cursor, projection, withProjection) {
   let query = db.collection(name)
     .orderBy(admin.firestore.FieldPath.documentId())
     .limit(STATS_PAGE_SIZE);
@@ -705,19 +815,19 @@ async function statsPage(name, cursor, projection, withProjection) {
  * The projection keeps the response tiny; if the SDK/backend rejects it for any
  * reason we fall back to full documents instead of failing the run.
  */
-async function scanCollection(name, projection) {
+async function scanCollection(db, name, projection) {
   const entries = [];
   let cursor = null;
 
   for (let page = 0; page < STATS_MAX_PAGES; page++) {
     let snap;
     try {
-      snap = await statsPage(name, cursor, projection, useStatsProjection);
+      snap = await statsPage(db, name, cursor, projection, useStatsProjection);
     } catch (err) {
       if (!useStatsProjection) throw err;
       console.warn(`Projection read on ${name} failed (${err.message}); falling back to full documents`);
       useStatsProjection = false;
-      snap = await statsPage(name, cursor, projection, false);
+      snap = await statsPage(db, name, cursor, projection, false);
     }
     if (snap.empty) break;
 
@@ -735,7 +845,7 @@ async function scanCollection(name, projection) {
  * documents would be invisible to the backlog query forever. The stats scan
  * already reads every repository, so they are stamped here for free.
  */
-async function patchLegacyCounters(entries) {
+async function patchLegacyCounters(db, entries) {
   const patches = new Map(); // ref.path -> { ref, fields }
 
   for (const entry of entries) {
@@ -774,9 +884,9 @@ async function patchLegacyCounters(entries) {
 }
 
 /** Compute and write `stats/ecosystem` and `stats/coverage`. */
-async function writeAggregateStats() {
-  const repoEntries = await scanCollection("repositories", REPO_STATS_FIELDS);
-  const devEntries = await scanCollection("developers", DEV_STATS_FIELDS);
+async function writeAggregateStats(db) {
+  const repoEntries = await scanCollection(db, "repositories", REPO_STATS_FIELDS);
+  const devEntries = await scanCollection(db, "developers", DEV_STATS_FIELDS);
 
   const repoRows = repoEntries.map((entry) => entry.row);
   const devRows = devEntries.map((entry) => entry.row);
@@ -789,7 +899,7 @@ async function writeAggregateStats() {
   await db.collection("stats").doc("ecosystem").set(ecosystem);
   await db.collection("stats").doc("coverage").set(coverage);
 
-  const counterPatches = await patchLegacyCounters(repoEntries);
+  const counterPatches = await patchLegacyCounters(db, repoEntries);
 
   console.log(
     `Aggregates written: stats/ecosystem (${ecosystem.total_repositories} repos, ` +
@@ -801,7 +911,37 @@ async function writeAggregateStats() {
   return { ecosystem, coverage, counterPatches };
 }
 
-main().catch((err) => {
-  console.error("Sync failed:", err);
-  process.exit(1);
-});
+// ─── Entry point ───────────────────────────────────────────────────────────
+//
+// Importing this module must stay free of side effects: the test suite requires
+// it without FIREBASE_SERVICE_ACCOUNT. Only a direct `node sync.js` runs the
+// worker, and only the worker decides the process exit code.
+
+/** Run the worker once and resolve with the process exit code (0 or 1). */
+async function runCli(deps = {}) {
+  try {
+    await main(deps);
+    return 0;
+  } catch (err) {
+    const { code, exitCode } = classifyFailure(err);
+    const line = formatFailureLine(code, err, secretValues());
+    console.error(redactSecrets(line, secretValues()));
+    return exitCode;
+  }
+}
+
+module.exports = {
+  main,
+  runCli,
+  getDb,
+  getNextCityIndex,
+  ghFetch,
+  ghGetRequired,
+  ghRequest,
+  SyncError,
+};
+
+if (require.main === module) {
+  runCli().then((code) => process.exit(code));
+}
+
