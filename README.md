@@ -162,7 +162,32 @@ No values are stored in the repository. Names and purpose:
 
 ### Firebase sync workflow
 
-`.github/workflows/sync-github-india.yml` runs `scripts/firebase-sync/sync.js`; it expects these GitHub Actions secrets: `GIT_TOKEN`, `GEMINI_API_KEY`, `FIREBASE_SERVICE_ACCOUNT`.
+`.github/workflows/sync-github-india.yml` runs `scripts/firebase-sync/sync.js` on the schedule in the
+workflow (`0 */2 * * *`; GitHub delivers scheduled runs late, see the comment in the workflow) and expects
+these GitHub Actions secrets: `GIT_TOKEN`, `GEMINI_API_KEY`, `FIREBASE_SERVICE_ACCOUNT`.
+
+A run exits `0` only when the whole sync succeeded. Any failure exits `1` and prints exactly one line,
+`Sync failed [<code>]: <detail>`, which never contains a URL, key or token.
+
+| Exit | Code | What happened | Operator action |
+|---|---|---|---|
+| 0 | — | discovery, backlog sweep and aggregates all succeeded; `stats/latest` was stamped | none |
+| 1 | `github_auth` | GitHub rejected the credentials (HTTP 401) on the discovery request | check the `GIT_TOKEN` secret: expired, revoked or wrongly scoped |
+| 1 | `github_rate_limited` | a 403/429 whose reset was 180 s or further away (shorter resets are still waited out and retried) | re-run later; repeated hits are a real rate-limit problem |
+| 1 | `github_network` | the discovery request never completed after 3 attempts | re-run; a repeated failure is an outage or egress problem |
+| 1 | `github_http` | any other non-200 answer on the discovery request | read the status in the line; 404/5xx are upstream or a wrong path |
+| 1 | `firestore_precondition` | Firestore returned gRPC 9 — in practice a composite index the query needs is not deployed | a human decides and deploys the index; the worker never does |
+| 1 | `firestore_error` | any other Firestore failure (permissions, quota, transport) | read the line; check the service account and Firestore status |
+| 1 | `unknown` | an error this worker does not classify | read the line; the message is included, minus URLs and secrets |
+
+Notes:
+- A failed run does **not** write `stats/latest`. The city-rotation document `stats/sync-pointer` is
+  written before the discovery request and that behaviour is unchanged.
+- A genuinely empty discovery result (HTTP 200 with no items) is **not** a failure: it logs
+  `No users found for <city>` and the run completes normally.
+- Deploying an index and rotating the token are owner actions. The worker prescribes no index,
+  workflow or schedule change.
+- A red sync is not evidence that the hosted site is up or down; hosting availability is UNVERIFIED.
 
 ## API Surface
 

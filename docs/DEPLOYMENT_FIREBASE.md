@@ -3,7 +3,7 @@
 ## Architecture (No Blaze Plan Required)
 
 ```
-GitHub Actions (free, every 5 min)
+GitHub Actions (free, every 2 h)
   │
   ├── GitHub Search API → discover Indian developers by city
   ├── GitHub Users/Repos API → fetch profiles + repositories
@@ -83,7 +83,7 @@ Then go to GitHub → Actions → "Sync Indian GitHub Developers" → Run workfl
 
 This first run discovers ~30 developers in Bangalore (the first city in rotation), fetches their repos, classifies them with Gemini, geocodes their locations, and writes everything to Firestore.
 
-Subsequent runs cycle through all 39 Indian cities automatically every 5 minutes.
+Subsequent runs cycle through the 39 Indian cities one city per run, on the workflow's 2-hour schedule.
 
 ### 6. Verify data in Firestore
 
@@ -122,10 +122,10 @@ firebase deploy --only hosting
 
 ### 9. Verify the live site
 
-1. Visit `https://gitlatitude.web.app` (default Firebase Hosting URL)
+1. Visit `https://gitlatitude.web.app` (default Firebase Hosting URL) — availability UNVERIFIED (2026-10-20); this document makes no claim about whether it is currently served
 2. The map should show Indian developer repo points plotted by location
 3. Points are colored by AI-classified domain (AI=violet, Cybersecurity=blue, etc.)
-4. Every 5 min, GitHub Actions syncs new data → Firestore → onSnapshot updates the map
+4. Every 2 h (cron `0 */2 * * *`), GitHub Actions syncs new data → Firestore → onSnapshot updates the map
 
 ## How Realtime Works
 
@@ -141,7 +141,7 @@ Time 10:00 Next cycle: discovers developers in Mumbai
 ...        Cycles through all 39 Indian cities, then repeats
 ```
 
-Data freshness: **~2-5 minutes** per city. Full India coverage: **~3.5 hours** (39 cities × 5 min).
+Data freshness: **one city per run**. Full India coverage: **~78 hours** (39 cities × one 2-hourly run each), and GitHub's scheduler delivers scheduled runs late, so treat that as the nominal cadence rather than a guarantee. A failed run refreshes nothing: it exits non-zero and leaves `stats/latest` untouched (see the "Firebase sync workflow" section in the README for the exit codes).
 
 ## Scaling
 
