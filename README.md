@@ -166,14 +166,15 @@ No values are stored in the repository. Names and purpose:
 workflow (`0 */2 * * *`; GitHub delivers scheduled runs late, see the comment in the workflow) and expects
 these GitHub Actions secrets: `GIT_TOKEN`, `GEMINI_API_KEY`, `FIREBASE_SERVICE_ACCOUNT`.
 
-A run exits `0` only when the whole sync succeeded. Any failure exits `1` and prints exactly one line,
-`Sync failed [<code>]: <detail>`, which never contains a URL, key or token.
+A run exits `0` only when the whole sync succeeded. Any failure exits `1` and prints one
+`Sync failed [<code>]: <detail>` line, which never contains a URL, key or token. Per-request warnings that
+the request loop already logged (for example `GitHub API 401 for /search/users`) can precede it.
 
 | Exit | Code | What happened | Operator action |
 |---|---|---|---|
 | 0 | — | discovery, backlog sweep and aggregates all succeeded; `stats/latest` was stamped | none |
 | 1 | `github_auth` | GitHub rejected the credentials (HTTP 401) on the discovery request | check the `GIT_TOKEN` secret: expired, revoked or wrongly scoped |
-| 1 | `github_rate_limited` | a 403/429 whose reset was 180 s or further away (shorter resets are still waited out and retried) | re-run later; repeated hits are a real rate-limit problem |
+| 1 | `github_rate_limited` | a 403/429 whose reset was 180 s or further away, or three attempts spent on shorter resets (short resets are still waited out and retried) | re-run later; repeated hits are a real rate-limit problem |
 | 1 | `github_network` | the discovery request never completed after 3 attempts | re-run; a repeated failure is an outage or egress problem |
 | 1 | `github_http` | any other non-200 answer on the discovery request | read the status in the line; 404/5xx are upstream or a wrong path |
 | 1 | `firestore_precondition` | Firestore returned gRPC 9 — in practice a composite index the query needs is not deployed | a human decides and deploys the index; the worker never does |
