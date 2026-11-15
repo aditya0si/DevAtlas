@@ -331,8 +331,96 @@ async function getNextCityIndex() {
 
 // ─── Main sync ─────────────────────────────────────────────────────────────
 
+// ─── Ensure the composite indexes the backlog sweeps depend on ───────────────
+// The sweeps filter on two fields and order by one of them, which Firestore can
+// only serve from a composite index. Those indexes are *declared* in
+// firestore.indexes.json, but declaring is not deploying: unless
+// `firebase deploy --only firestore:indexes` was run against the project, every
+// sweep dies with FAILED_PRECONDITION ("The query requires an index") and the
+// scheduled worker fails on its first run.
+//
+// Creating them here, best-effort, lets the worker repair that state itself.
+// A newly created index takes a minute or two to build, so the sweeps in the
+// same run may still fail — the next scheduled run succeeds.
+async function ensureCompositeIndexes() {
+  const projectId = serviceAccount.project_id;
+  if (!projectId) return { skipped: "no project_id in service account" };
+
+  const fs = require("fs");
+  const path = require("path");
+
+  const specPath = path.join(__dirname, "..", "..", "firestore.indexes.json");
+  if (!fs.existsSync(specPath)) return { skipped: "firestore.indexes.json not found" };
+  const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
+
+  const { access_token: token } = await admin.app().options.credential.getAccessToken();
+  const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+  const base = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/collectionGroups`;
+
+  const created = [];
+  const failed = [];
+
+  for (const idx of spec.indexes || []) {
+    const listUrl = `${base}/${idx.collectionGroup}/indexes`;
+    const wanted = (idx.fields || [])
+      .map((f) => `${f.fieldPath}:${f.order || f.arrayConfig}`)
+      .sort()
+      .join("|");
+
+    try {
+      const listRes = await fetch(listUrl, { headers });
+      if (!listRes.ok) {
+        failed.push(`${idx.collectionGroup}: list HTTP ${listRes.status}`);
+        continue;
+      }
+      const { indexes = [] } = await listRes.json();
+      const already = indexes.some((e) => {
+        const got = (e.fields || [])
+          .filter((f) => f.fieldPath !== "__name__")
+          .map((f) => `${f.fieldPath}:${f.order || f.arrayConfig}`)
+          .sort()
+          .join("|");
+        return got === wanted && (e.queryScope || "COLLECTION") === (idx.queryScope || "COLLECTION");
+      });
+      if (already) continue;
+
+      const createRes = await fetch(listUrl, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ queryScope: idx.queryScope || "COLLECTION", fields: idx.fields }),
+      });
+      if (createRes.ok) {
+        created.push(`${idx.collectionGroup}(${wanted})`);
+      } else {
+        failed.push(`${idx.collectionGroup}: create HTTP ${createRes.status} ${(await createRes.text()).slice(0, 140)}`);
+      }
+    } catch (err) {
+      failed.push(`${idx.collectionGroup}: ${err.message}`);
+    }
+  }
+
+  if (created.length) {
+    console.log(`Indexes created (allow ~2 min to build): ${created.join(", ")}`);
+  }
+  if (failed.length) {
+    console.warn(`Index preflight incomplete: ${failed.join("; ")}`);
+  }
+  return { created, failed };
+}
+
 async function main() {
   console.log("=== DevAtlas India Sync ===");
+
+  // Best-effort index repair before the sweeps run. Never fails the sync.
+  try {
+    const idx = await ensureCompositeIndexes();
+    if (idx.skipped) console.log(`Index preflight skipped: ${idx.skipped}`);
+    else if (idx.created?.length) console.log(`Index preflight: created ${idx.created.length} missing index(es)`);
+    else console.log("Index preflight: all declared indexes present");
+  } catch (err) {
+    console.warn(`Index preflight skipped: ${err.message}`);
+  }
+
   let reposSynced = 0;
   let devsDiscovered = 0;
   let activityScored = 0;
