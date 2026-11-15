@@ -392,7 +392,11 @@ async function ensureCompositeIndexes() {
       if (createRes.ok) {
         created.push(`${idx.collectionGroup}(${wanted})`);
       } else {
-        failed.push(`${idx.collectionGroup}: create HTTP ${createRes.status} ${(await createRes.text()).slice(0, 140)}`);
+        const hint =
+          createRes.status === 403 || createRes.status === 401
+            ? " — the service account cannot create indexes; run `firebase deploy --only firestore:indexes` once, or grant it the Cloud Datastore Owner role"
+            : "";
+        failed.push(`${idx.collectionGroup}: create HTTP ${createRes.status}${hint}`);
       }
     } catch (err) {
       failed.push(`${idx.collectionGroup}: ${err.message}`);
@@ -416,6 +420,7 @@ async function main() {
     const idx = await ensureCompositeIndexes();
     if (idx.skipped) console.log(`Index preflight skipped: ${idx.skipped}`);
     else if (idx.created?.length) console.log(`Index preflight: created ${idx.created.length} missing index(es)`);
+    else if (idx.failed?.length) console.log("Index preflight: could not confirm every index (see warning above)");
     else console.log("Index preflight: all declared indexes present");
   } catch (err) {
     console.warn(`Index preflight skipped: ${err.message}`);
