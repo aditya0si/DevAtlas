@@ -49,3 +49,6 @@ frontend/test-results/
 frontend/screenshots/
 .env.local
 !.env.example
+
+# created by local npm install for the sync worker
+scripts/firebase-sync/package-lock.json
